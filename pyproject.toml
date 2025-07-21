@@ -1,0 +1,16 @@
+[project]
+name = "metabolic-modelling"
+version = "0.1.0"
+description = "Metabolic modelling to inform engineering efforts of microbes for UBC iGEM 2025 project."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "cobra>=0.29.1",
+    "escher>=1.8.1",
+    "marimo>=0.14.12",
+    "matplotlib>=3.10.3",
+    "numpy>=2.2.6",
+    "pandas>=2.3.1",
+    "pyarrow>=21.0.0",
+    "scipy>=1.15.3",
+]
