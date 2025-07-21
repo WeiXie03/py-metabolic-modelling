@@ -10,9 +10,9 @@ def _(mo):
         r"""
         # Optimizing Media of _Synechococcus elongatus_ UTEX 2973 for Max Growth
         This notebook aims to computationally predict the best variations of the media we are using for our cyanobacterium strain (_S. elongatus_ UTEX 2973), BG-11 media, for fastest growth.
-
+    
         Following standard flux balance analysis (FBA) theory, the **objective** here is formulated as **maximizing the *flux* of** a "fake" reaction formulated purely to track **biomass accumulation**, therein serving as a proxy for growth rate of the cells.
-
+    
         The parameters that we will vary and **search over** are the **maximum allowed uptake rates of each of the BG-11 media components**.
         """
     )
@@ -21,7 +21,7 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    mo.md(r"## Load model_extended_constraints")
+    mo.md(r"## Load model")
     return
 
 
@@ -31,13 +31,13 @@ def _(mo):
         r"""
         We are using the
         >composite GSM model for both Synechococcus 7942 and Synechococcus 2973
-
+    
         developed in (Mueller et. al., 2017).
-
+    
         The two models are in `SBMLmodel_UTEX2973.xml` and `SBMLmodel_PCC7942.xml` corresponding to supplementary files 2 and 3 of (Mueller et. al., 2017) respectively. The latter should be the one for UTEX 2973, as opposed to PCC 7942.
-
+    
         ---
-
+    
         Mueller, T., Ungerer, J., Pakrasi, H. et al. Identifying the Metabolic Differences of a Fast-Growth Phenotype in Synechococcus UTEX 2973. Sci Rep 7, 41569 (2017). https://doi.org/10.1038/srep41569
         """
     )
@@ -140,11 +140,11 @@ def _(mo):
     mo.md(
         r"""
         Extend the default flux constraints in the model so we actually explore enough of the space of possibilities.
-
+    
         From the above (_TODO_) phenotypic phase plane analyses, we know optimal...
         - CO2 = -132 mmol/gDW/h, photosystem I = photosystem II = -900 mmol/gDW/h
         - CO2 = -30 mmol/gDW/h, NH3 = -30 mmol/gDW/h
-
+    
         Let's go to...
         - -2000 $\leq$ CO2
         - -2500 $\leq$ photosystems
@@ -201,7 +201,7 @@ def _(mo):
         r"""
         ### _Note_: Beware Loops
         The [COBRApy docs](https://cobrapy.readthedocs.io/en/latest/simulating.html#Running-FVA) note that unrealistic **loops** of reactions may be simulated, leading to some **unrealistically high fluxes**. Luckily, COBRApy includes detecting such loops and ensuring solutions without their resulting artifacts.
-
+    
         Let's see if we got any such loops here.
         """
     )
@@ -276,6 +276,129 @@ def _(fva_results_1, plt):
     _ax.set_ylabel('Reactions')
     plt.tight_layout()
     plt.show()
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+        ## Some Proper Optimization
+        Ok, what we have here is an optimization over a moderately high-dimensional parameter space with quite a tractable objective function (FBA solve = linear programming). It's time to use a framework like [Ax](https://ax.dev/).
+        """
+    )
+    return
+
+
+@app.cell
+def _(model):
+    def fba_solve(model, flux_bounds: dict[str, tuple[float, float]]):
+        for _rxn_id, (_lower_bound, _upper_bound) in flux_bounds.items():
+            if _rxn_id in model.reactions:
+                _rxn = model.reactions.get_by_id(_rxn_id)
+                _rxn.lower_bound = _lower_bound
+                _rxn.upper_bound = _upper_bound
+        solution = model.optimize()
+        return solution.objective_value
+
+    def BG11_uptakes_objective(lb_EX_CO2: float,
+                                lb_EX_PHO1: float,
+                                lb_EX_PHO2: float,
+                                lb_EX_NH3: float,
+                                lb_EX_Mn2_: float,
+                                lb_EX_Zinc: float,
+                                lb_EX_Cu2_: float,
+                                lb_EX_Molybdate: float,
+                                lb_EX_Co2_: float,
+                                lb_EX_Nitrate: float,
+                                lb_EX_Phosphate: float,
+                                lb_EX_Sulfate: float,
+                                lb_EX_Fe3_: float,
+                                lb_EX_Calcium: float,
+                                lb_EX_Citrate: float,
+                                lb_EX_H2CO3: float) -> float:
+        flux_bounds = {
+            "EX_CO2": (lb_EX_CO2, 0),
+            "EX_PHO1": (lb_EX_PHO1, 0),
+            "EX_PHO2": (lb_EX_PHO2, 0),
+            "EX_NH3": (lb_EX_NH3, 0),
+            "EX_Mn2_": (lb_EX_Mn2_, 0),
+            "EX_Zinc": (lb_EX_Zinc, 0),
+            "EX_Cu2_": (lb_EX_Cu2_, 0),
+            "EX_Molybdate": (lb_EX_Molybdate, 0),
+            "EX_Co2_": (lb_EX_Co2_, 0),
+            "EX_Nitrate": (lb_EX_Nitrate, 0),
+            "EX_Phosphate": (lb_EX_Phosphate, 0),
+            "EX_Sulfate": (lb_EX_Sulfate, 0),
+            "EX_Fe3_": (lb_EX_Fe3_, 0),
+            "EX_Calcium": (lb_EX_Calcium, 0),
+            "EX_Citrate": (lb_EX_Citrate, 0),
+            "EX_H2CO3": (lb_EX_H2CO3, 0)
+        }
+        with model:
+            return fba_solve(model, flux_bounds)
+    return (BG11_uptakes_objective,)
+
+
+@app.cell
+def _():
+    from ax import Client, RangeParameterConfig
+
+    params = [
+        RangeParameterConfig(name="lb_EX_CO2", parameter_type="float", bounds=(-2400, -1000)),
+        RangeParameterConfig(name="lb_EX_PHO1", parameter_type="float", bounds=(-2800, -1000)),
+        RangeParameterConfig(name="lb_EX_PHO2", parameter_type="float", bounds=(-2800, -1000)),
+        RangeParameterConfig(name="lb_EX_NH3", parameter_type="float", bounds=(-2000, -50)),
+        RangeParameterConfig(name="lb_EX_Mn2_", parameter_type="float", bounds=(-500, 0)),
+        RangeParameterConfig(name="lb_EX_Zinc", parameter_type="float", bounds=(-500, 0)),
+        RangeParameterConfig(name="lb_EX_Cu2_", parameter_type="float", bounds=(-500, 0)),
+        RangeParameterConfig(name="lb_EX_Molybdate", parameter_type="float", bounds=(-500, 0)),
+        RangeParameterConfig(name="lb_EX_Co2_", parameter_type="float", bounds=(-500, 0)),
+        RangeParameterConfig(name="lb_EX_Nitrate", parameter_type="float", bounds=(-2000, -50)),
+        RangeParameterConfig(name="lb_EX_Phosphate", parameter_type="float", bounds=(-1500, -10)),
+        RangeParameterConfig(name="lb_EX_Sulfate", parameter_type="float", bounds=(-1500, -10)),
+        RangeParameterConfig(name="lb_EX_Fe3_", parameter_type="float", bounds=(-500, 0)),
+        RangeParameterConfig(name="lb_EX_Calcium", parameter_type="float", bounds=(-500, 0)),
+        RangeParameterConfig(name="lb_EX_Citrate", parameter_type="float", bounds=(-2500, 0)),
+        RangeParameterConfig(name="lb_EX_H2CO3", parameter_type="float", bounds=(-10, -1))
+    ]
+
+    client = Client()
+    client.configure_experiment(parameters=params)
+    client.configure_optimization(objective="BG11_uptakes_objective")
+    return (client,)
+
+
+@app.cell
+def _(mo):
+    mo.md(r"Now the optimization is finally set up, and the optimization loop can actually begin.")
+    return
+
+
+@app.cell
+def _(BG11_uptakes_objective, client):
+    NUM_ROUNDS_OPTIM = 20
+
+    for i_opt_round in range(NUM_ROUNDS_OPTIM):
+        trials = client.get_next_trials(max_trials=2)
+
+        for i_trial, parameters in trials.items():
+            print(f"Trial {i_trial}: {parameters}")
+
+            objective_value = BG11_uptakes_objective(**parameters)
+            raw_data = {"BG11_uptakes_objective": objective_value}
+
+            client.complete_trial(trial_index=i_trial, raw_data=raw_data)
+
+    best_parameters, prediction, index, name = client.get_best_parameterization()
+    print(f"Best parameters: {best_parameters}")
+    print(f"Best objective value: {prediction[0]}, with variance {prediction[1]}")
+    return
+
+
+@app.cell
+def _(client):
+    cards = client.compute_analyses(display=True)
     return
 
 
