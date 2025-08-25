@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.14.12"
+__generated_with = "0.15.0"
 app = marimo.App(width="medium")
 
 
@@ -8,20 +8,20 @@ app = marimo.App(width="medium")
 def _(mo):
     mo.md(
         r"""
-        # Optimizing Media of _Synechococcus elongatus_ UTEX 2973 for Max Growth
-        This notebook aims to computationally predict the best variations of the media we are using for our cyanobacterium strain (_S. elongatus_ UTEX 2973), BG-11 media, for fastest growth.
-    
-        Following standard flux balance analysis (FBA) theory, the **objective** here is formulated as **maximizing the *flux* of** a "fake" reaction formulated purely to track **biomass accumulation**, therein serving as a proxy for growth rate of the cells.
-    
-        The parameters that we will vary and **search over** are the **maximum allowed uptake rates of each of the BG-11 media components**.
-        """
+    # Optimizing Media of _Synechococcus elongatus_ UTEX 2973 for Max Growth
+    This notebook aims to computationally predict the best variations of the media we are using for our cyanobacterium strain (_S. elongatus_ UTEX 2973), BG-11 media, for fastest growth.
+
+    Following standard flux balance analysis (FBA) theory, the **objective** here is formulated as **maximizing the *flux* of** a "fake" reaction formulated purely to track **biomass accumulation**, therein serving as a proxy for growth rate of the cells.
+
+    The parameters that we will vary and **search over** are the **maximum allowed uptake rates of each of the BG-11 media components**.
+    """
     )
     return
 
 
 @app.cell
 def _(mo):
-    mo.md(r"## Load model")
+    mo.md(r"""## Load model""")
     return
 
 
@@ -29,24 +29,24 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-        We are using the
-        >composite GSM model for both Synechococcus 7942 and Synechococcus 2973
-    
-        developed in (Mueller et. al., 2017).
-    
-        The two models are in `SBMLmodel_UTEX2973.xml` and `SBMLmodel_PCC7942.xml` corresponding to supplementary files 2 and 3 of (Mueller et. al., 2017) respectively. The latter should be the one for UTEX 2973, as opposed to PCC 7942.
-    
-        ---
-    
-        Mueller, T., Ungerer, J., Pakrasi, H. et al. Identifying the Metabolic Differences of a Fast-Growth Phenotype in Synechococcus UTEX 2973. Sci Rep 7, 41569 (2017). https://doi.org/10.1038/srep41569
-        """
+    We are using the
+    >composite GSM model for both Synechococcus 7942 and Synechococcus 2973
+
+    developed in (Mueller et. al., 2017).
+
+    The two models are in `SBMLmodel_UTEX2973.xml` and `SBMLmodel_PCC7942.xml` corresponding to supplementary files 2 and 3 of (Mueller et. al., 2017) respectively. The latter should be the one for UTEX 2973, as opposed to PCC 7942.
+
+    ---
+
+    Mueller, T., Ungerer, J., Pakrasi, H. et al. Identifying the Metabolic Differences of a Fast-Growth Phenotype in Synechococcus UTEX 2973. Sci Rep 7, 41569 (2017). https://doi.org/10.1038/srep41569
+    """
     )
     return
 
 
 @app.cell
 def _(mo):
-    mo.md(r"_Note_: The below cell might take a bit long to run if the SBML model is big.")
+    mo.md(r"""_Note_: The below cell might take a bit long to run if the SBML model is big.""")
     return
 
 
@@ -58,11 +58,10 @@ def _():
     from cobra.io import read_sbml_model, save_json_model
     from cobra import Model, Reaction, Metabolite
 
-    # RAW_DATA_DIR = Path(__file__).parent / "data" / "raw"
-    # PROCD_DATA_DIR = Path(__file__).parent / "data" / "processed"
-    ROOT_DIR = Path("/home/tom/Public/UBCiGEM/metabolic_modelling")
-    RAW_DATA_DIR = ROOT_DIR / "data" / "raw"
-    PROCD_DATA_DIR = ROOT_DIR / "data" / "processed"
+    RAW_DATA_DIR = Path(__file__).parent.parent / "data" / "raw"
+    PROCD_DATA_DIR = Path(__file__).parent.parent / "data" / "processed"
+    # RAW_DATA_DIR = ROOT_DIR / "data" / "raw"
+    # PROCD_DATA_DIR = ROOT_DIR / "data" / "processed"
 
     model = read_sbml_model(RAW_DATA_DIR / "SBMLmodel_UTEX2973.xml")
     return mo, model
@@ -72,9 +71,9 @@ def _():
 def _(mo):
     mo.md(
         r"""
-        ## Finding the Media Components in the Model
-        Well actually, finding the ID's of the exchange reactions in the model *corresponding to* the media components.
-        """
+    ## Finding the Media Components in the Model
+    Well actually, finding the ID's of the exchange reactions in the model *corresponding to* the media components.
+    """
     )
     return
 
@@ -116,9 +115,9 @@ def _(BG_11_MEDIA_EXRXNS_IDS, model):
 def _(mo):
     mo.md(
         r"""
-        ### Oxygen
-        On Mars, no oxygen $\implies v_{\mathtt{EX\_O2}} \geq 0$.
-        """
+    ### Oxygen
+    On Mars, no oxygen $\implies v_{\mathtt{EX\_O2}} \geq 0$.
+    """
     )
     return
 
@@ -131,7 +130,7 @@ def _(model):
 
 @app.cell
 def _(mo):
-    mo.md(r"## Flux Variability Analysis on BG-11 Components Uptakes")
+    mo.md(r"""## Flux Variability Analysis on BG-11 Components Uptakes""")
     return
 
 
@@ -139,17 +138,17 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-        Extend the default flux constraints in the model so we actually explore enough of the space of possibilities.
-    
-        From the above (_TODO_) phenotypic phase plane analyses, we know optimal...
-        - CO2 = -132 mmol/gDW/h, photosystem I = photosystem II = -900 mmol/gDW/h
-        - CO2 = -30 mmol/gDW/h, NH3 = -30 mmol/gDW/h
-    
-        Let's go to...
-        - -2000 $\leq$ CO2
-        - -2500 $\leq$ photosystems
-        - -1000 $\leq$ others
-        """
+    Extend the default flux constraints in the model so we actually explore enough of the space of possibilities.
+
+    From the above (_TODO_) phenotypic phase plane analyses, we know optimal...
+    - CO2 = -132 mmol/gDW/h, photosystem I = photosystem II = -900 mmol/gDW/h
+    - CO2 = -30 mmol/gDW/h, NH3 = -30 mmol/gDW/h
+
+    Let's go to...
+    - -2000 $\leq$ CO2
+    - -2500 $\leq$ photosystems
+    - -1000 $\leq$ others
+    """
     )
     return
 
@@ -199,11 +198,11 @@ def _(fva_results):
 def _(mo):
     mo.md(
         r"""
-        ### _Note_: Beware Loops
-        The [COBRApy docs](https://cobrapy.readthedocs.io/en/latest/simulating.html#Running-FVA) note that unrealistic **loops** of reactions may be simulated, leading to some **unrealistically high fluxes**. Luckily, COBRApy includes detecting such loops and ensuring solutions without their resulting artifacts.
-    
-        Let's see if we got any such loops here.
-        """
+    ### _Note_: Beware Loops
+    The [COBRApy docs](https://cobrapy.readthedocs.io/en/latest/simulating.html#Running-FVA) note that unrealistic **loops** of reactions may be simulated, leading to some **unrealistically high fluxes**. Luckily, COBRApy includes detecting such loops and ensuring solutions without their resulting artifacts.
+
+    Let's see if we got any such loops here.
+    """
     )
     return
 
@@ -226,9 +225,9 @@ def _(fva_results, loopless_fva_results):
 def _(mo):
     mo.md(
         r"""
-        ### No Longer Using CO2 as Main Carbon Source?
-        Ideally, we would want cyano to use CO2 as citrate, carbonic acid, etc. would need to be transported to Mars.
-        """
+    ### No Longer Using CO2 as Main Carbon Source?
+    Ideally, we would want cyano to use CO2 as citrate, carbonic acid, etc. would need to be transported to Mars.
+    """
     )
     return
 
@@ -283,9 +282,9 @@ def _(fva_results_1, plt):
 def _(mo):
     mo.md(
         r"""
-        ## Some Proper Optimization
-        Ok, what we have here is an optimization over a moderately high-dimensional parameter space with quite a tractable objective function (FBA solve = linear programming). It's time to use a framework like [Ax](https://ax.dev/).
-        """
+    ## Some Proper Optimization
+    Ok, what we have here is an optimization over a moderately high-dimensional parameter space with quite a tractable objective function (FBA solve = linear programming). It's time to use a framework like [Ax](https://ax.dev/).
+    """
     )
     return
 
@@ -342,36 +341,45 @@ def _(model):
 
 @app.cell
 def _():
+    import torch
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # device = "cpu"
+    return (device,)
+
+
+@app.cell
+def _(device):
     from ax import Client, RangeParameterConfig
 
     params = [
-        RangeParameterConfig(name="lb_EX_CO2", parameter_type="float", bounds=(-2400, -1000)),
-        RangeParameterConfig(name="lb_EX_PHO1", parameter_type="float", bounds=(-2800, -1000)),
-        RangeParameterConfig(name="lb_EX_PHO2", parameter_type="float", bounds=(-2800, -1000)),
-        RangeParameterConfig(name="lb_EX_NH3", parameter_type="float", bounds=(-2000, -50)),
-        RangeParameterConfig(name="lb_EX_Mn2_", parameter_type="float", bounds=(-500, 0)),
-        RangeParameterConfig(name="lb_EX_Zinc", parameter_type="float", bounds=(-500, 0)),
-        RangeParameterConfig(name="lb_EX_Cu2_", parameter_type="float", bounds=(-500, 0)),
-        RangeParameterConfig(name="lb_EX_Molybdate", parameter_type="float", bounds=(-500, 0)),
-        RangeParameterConfig(name="lb_EX_Co2_", parameter_type="float", bounds=(-500, 0)),
-        RangeParameterConfig(name="lb_EX_Nitrate", parameter_type="float", bounds=(-2000, -50)),
-        RangeParameterConfig(name="lb_EX_Phosphate", parameter_type="float", bounds=(-1500, -10)),
-        RangeParameterConfig(name="lb_EX_Sulfate", parameter_type="float", bounds=(-1500, -10)),
-        RangeParameterConfig(name="lb_EX_Fe3_", parameter_type="float", bounds=(-500, 0)),
-        RangeParameterConfig(name="lb_EX_Calcium", parameter_type="float", bounds=(-500, 0)),
-        RangeParameterConfig(name="lb_EX_Citrate", parameter_type="float", bounds=(-2500, 0)),
-        RangeParameterConfig(name="lb_EX_H2CO3", parameter_type="float", bounds=(-10, -1))
+        RangeParameterConfig(name="lb_EX_CO2", parameter_type="float", bounds=(-3600, -1000)),
+        RangeParameterConfig(name="lb_EX_PHO1", parameter_type="float", bounds=(-3000, -1000)),
+        RangeParameterConfig(name="lb_EX_PHO2", parameter_type="float", bounds=(-3000, -1000)),
+        RangeParameterConfig(name="lb_EX_NH3", parameter_type="float", bounds=(-3000, -50)),
+        RangeParameterConfig(name="lb_EX_Mn2_", parameter_type="float", bounds=(-1000, 0)),
+        RangeParameterConfig(name="lb_EX_Zinc", parameter_type="float", bounds=(-1000, 0)),
+        RangeParameterConfig(name="lb_EX_Cu2_", parameter_type="float", bounds=(-1000, 0)),
+        RangeParameterConfig(name="lb_EX_Molybdate", parameter_type="float", bounds=(-1000, 0)),
+        RangeParameterConfig(name="lb_EX_Co2_", parameter_type="float", bounds=(-1000, 0)),
+        RangeParameterConfig(name="lb_EX_Nitrate", parameter_type="float", bounds=(-3200, -50)),
+        RangeParameterConfig(name="lb_EX_Phosphate", parameter_type="float", bounds=(-3200, -10)),
+        RangeParameterConfig(name="lb_EX_Sulfate", parameter_type="float", bounds=(-3200, -10)),
+        RangeParameterConfig(name="lb_EX_Fe3_", parameter_type="float", bounds=(-1000, 0)),
+        RangeParameterConfig(name="lb_EX_Calcium", parameter_type="float", bounds=(-1000, 0)),
+        RangeParameterConfig(name="lb_EX_Citrate", parameter_type="float", bounds=(-3000, 0)),
+        RangeParameterConfig(name="lb_EX_H2CO3", parameter_type="float", bounds=(-500, 0))
     ]
 
     client = Client()
     client.configure_experiment(parameters=params)
     client.configure_optimization(objective="BG11_uptakes_objective")
+    client.configure_generation_strategy(allow_exceeding_initialization_budget=True, torch_device=device)
     return (client,)
 
 
 @app.cell
 def _(mo):
-    mo.md(r"Now the optimization is finally set up, and the optimization loop can actually begin.")
+    mo.md(r"""Now the optimization is finally set up, and the optimization loop can actually begin.""")
     return
 
 
@@ -389,16 +397,26 @@ def _(BG11_uptakes_objective, client):
             raw_data = {"BG11_uptakes_objective": objective_value}
 
             client.complete_trial(trial_index=i_trial, raw_data=raw_data)
+    return
 
-    best_parameters, prediction, index, name = client.get_best_parameterization()
-    print(f"Best parameters: {best_parameters}")
-    print(f"Best objective value: {prediction[0]}, with variance {prediction[1]}")
+
+@app.cell
+def _(client):
+    # best_params, pred, best_idx, nm = client.get_best_parameterization()
+    client.get_best_parameterization()
+    # print("Best parameters:", best_params)
+    # print("Best objective value: (mean, variance)", pred)
     return
 
 
 @app.cell
 def _(client):
     cards = client.compute_analyses(display=True)
+    return
+
+
+@app.cell
+def _():
     return
 
 
