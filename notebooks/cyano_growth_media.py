@@ -64,7 +64,7 @@ def _():
     # PROCD_DATA_DIR = ROOT_DIR / "data" / "processed"
 
     model = read_sbml_model(RAW_DATA_DIR / "SBMLmodel_UTEX2973.xml")
-    return mo, model
+    return cobra, mo, model
 
 
 @app.cell
@@ -125,6 +125,342 @@ def _(mo):
 @app.cell
 def _(model):
     print(f"Default bounds on oxygen exchange reaction: {model.reactions.EX_O2.lower_bound} < v_{{EX_O2}} < {model.reactions.EX_O2.upper_bound}")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    ## Phenotypic Phase Planes
+    First explore some potentially important components, varying pairs simultaneously at a time.
+    """
+    )
+    return
+
+
+@app.cell
+def _(cobra, plt):
+    import numpy as np
+    from typing import List, Tuple, Optional
+
+    def plot_phenotypic_phase_plane(model: cobra.Model,
+                                   rxnsIDs_x: List[str],
+                                   rxnsIDs_y: List[str],
+                                   x_range_spec: Tuple[float, float, int],
+                                   y_range_spec: Tuple[float, float, int],
+                                   title: str,
+                                   xlabel: str,
+                                   ylabel: str,
+                                   obj_rxn_id: Optional[str] = None,
+                                   plot: bool = True) -> Tuple[Tuple[float, float], float, np.ndarray]:
+        """
+        Plots the phenotypic phase plane for two sets of reactions in a COBRApy model.
+
+        Args:
+            model (cobra.Model): The COBRApy model to analyze.
+            rxnsIDs_x: List of IDs of reactions for the x-axis. If > 1 reaction, 
+                       at every step all their flux lower bounds will be set to the same step value.
+            rxnsIDs_y: List of IDs of reactions for the y-axis. If > 1 reaction, 
+                       at every step all their flux lower bounds will be set to the same step value.
+            x_range_spec: Tuple (min, max, num_steps) specifying the range and number of steps for the x-axis reactions.
+            y_range_spec: Tuple (min, max, num_steps) specifying the range and number of steps for the y-axis reactions.
+            title: Title of the plot.
+            xlabel: Label for the x-axis.
+            ylabel: Label for the y-axis.
+            obj_rxn_id: ID of the reaction to optimize (default: model's current objective).
+            plot: Whether to create the plot (default: True).
+
+        Returns:
+            tuple: (best_lbs, best_objective_value, objective_matrix) where:
+                   - best_lbs is a tuple of the best lower bounds (x, y)
+                   - best_objective_value is the corresponding objective value
+                   - objective_matrix is the 2D array of objective values for plotting
+        """
+
+        # Input validation
+        for rxn_id in rxnsIDs_x + rxnsIDs_y:
+            if rxn_id not in model.reactions:
+                raise ValueError(f'Reaction {rxn_id} not found in the model.')
+
+        with model:
+            # Set objective if specified
+            if obj_rxn_id is not None:
+                model.objective = obj_rxn_id
+
+            # Create coordinate arrays using numpy
+            x_values = np.linspace(x_range_spec[0], x_range_spec[1], x_range_spec[2])
+            y_values = np.linspace(y_range_spec[0], y_range_spec[1], y_range_spec[2])
+
+            # Create meshgrid for coordinates
+            X, Y = np.meshgrid(x_values, y_values, indexing='ij')
+
+            # Initialize results matrix, biomass accumulation rate is a flux => >= 0
+            objective_matrix = np.zeros(X.shape)
+
+            # Iterate through the meshgrid using numpy's flat indexing
+            for i, (x_val, y_val) in enumerate(zip(X.flat, Y.flat)):
+                # Convert flat index back to 2D indices
+                idx_2d = np.unravel_index(i, X.shape)
+
+                # Set lower bounds for x-axis reactions
+                for rxn_id in rxnsIDs_x:
+                    model.reactions.get_by_id(rxn_id).lower_bound = x_val
+                # Set lower bounds for y-axis reactions  
+                for rxn_id in rxnsIDs_y:
+                    model.reactions.get_by_id(rxn_id).lower_bound = y_val
+
+                # Optimize and store result
+                solution = model.slim_optimize(error_value= np.nan, message = f"Optimization failed at x={x_val:.3f}, y={y_val:.3f}")
+                # If optimization fails, slim_optimize will return NaN
+                objective_matrix[idx_2d] = solution
+
+        # Find best solution using numpy operations
+        # Handle NaN values by creating a mask
+        valid_mask = ~np.isnan(objective_matrix)
+
+        if not np.any(valid_mask):
+            print("No feasible solutions found in the specified ranges.")
+            return (None, None), np.nan, objective_matrix
+
+        # Find the maximum value and its location
+        best_idx = np.nanargmax(objective_matrix)
+        best_idx_2d = np.unravel_index(best_idx, objective_matrix.shape)
+        best_objective_value = objective_matrix[best_idx_2d]
+        best_lbs = (X[best_idx_2d], Y[best_idx_2d])
+
+        print(f'Best objective value {best_objective_value:.6f} found at:')
+        print(f'  {rxnsIDs_x} lower bounds = {best_lbs[0]:.6f}')
+        print(f'  {rxnsIDs_y} lower bounds = {best_lbs[1]:.6f}')
+
+        # Create the plot if requested
+        if plot:
+            fig, ax = plt.subplots(figsize=(10, 8))
+
+            # Create contour plot
+            contour = ax.contourf(X, Y, objective_matrix, levels=20, cmap='viridis')
+
+            # Add contour lines
+            contour_lines = ax.contour(X, Y, objective_matrix, levels=10, colors='white', alpha=0.5, linewidths=0.5)
+            ax.clabel(contour_lines, inline=True, fontsize=8)
+
+            # Mark the best point
+            if not np.isnan(best_objective_value):
+                ax.plot(best_lbs[0], best_lbs[1], 'r*', markersize=15, label=f'Best: {best_objective_value:.4f}')
+
+            # Add colorbar
+            cbar = plt.colorbar(contour, ax=ax)
+            cbar.set_label('Objective Value')
+
+            # Labels and title
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel(ylabel)
+            ax.set_title(title)
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+
+            plt.tight_layout()
+            plt.show()
+
+        return best_lbs, best_objective_value, objective_matrix
+
+
+    def analyze_phase_plane_statistics(objective_matrix: np.ndarray, 
+                                     X: np.ndarray, 
+                                     Y: np.ndarray) -> dict:
+        """
+        Analyze statistics of the phase plane results.
+
+        Args:
+            objective_matrix: 2D array of objective values
+            X, Y: Meshgrid arrays for x and y coordinates
+
+        Returns:
+            Dictionary containing various statistics
+        """
+        valid_mask = ~np.isnan(objective_matrix)
+        valid_values = objective_matrix[valid_mask]
+
+        if len(valid_values) == 0:
+            return {"error": "No valid solutions found"}
+
+        stats = {
+            "mean_objective": np.mean(valid_values),
+            "std_objective": np.std(valid_values),
+            "min_objective": np.min(valid_values),
+            "max_objective": np.max(valid_values),
+            "feasible_fraction": np.sum(valid_mask) / objective_matrix.size,
+            "total_points": objective_matrix.size,
+            "feasible_points": np.sum(valid_mask)
+        }
+
+        # Find coordinates of best solutions (top 5%)
+        threshold = np.percentile(valid_values, 95)
+        top_solutions_mask = (objective_matrix >= threshold) & valid_mask
+        top_x = X[top_solutions_mask]
+        top_y = Y[top_solutions_mask]
+
+        stats["top_5_percent_x_range"] = (np.min(top_x), np.max(top_x))
+        stats["top_5_percent_y_range"] = (np.min(top_y), np.max(top_y))
+
+        return stats
+    return (plot_phenotypic_phase_plane,)
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""### CO2 vs Light Uptake""")
+    return
+
+
+@app.cell
+def _(model, plot_phenotypic_phase_plane):
+    plot_phenotypic_phase_plane(model,
+                                ["EX_CO2"],
+                                ["EX_PHO1", "EX_PHO2"],
+                                (-3200, 0, 264),
+                                (-3200, 0, 264),
+                                title="CO_2 vs Light Uptake Phenotypic Phase Plane",
+                                xlabel="CO_2 Uptake (mmol/gDW/h)",
+                                ylabel="Light Uptake: Photosystem I Uptake = Photosystem II Uptake (\\mu E/m^2/s)")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""### CO2 vs Ammonia""")
+    return
+
+
+@app.cell
+def _(model, plot_phenotypic_phase_plane):
+    plot_phenotypic_phase_plane(model,
+                                ["EX_CO2"],
+                                ["EX_NH3"],
+                                (-3200, 0, 264),
+                                (-3200, 0, 264),
+                                title="CO2 vs Ammonia Uptake Phenotypic Phase Plane",
+                                xlabel="CO_2 Uptake (mmol/gDW/h)",
+                                ylabel="NH_3 Uptake (mmol/gDW/h)")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""### CO2 vs Nitrate""")
+    return
+
+
+@app.cell
+def _(model, plot_phenotypic_phase_plane):
+    plot_phenotypic_phase_plane(model,
+                                ["EX_CO2"],
+                                ["EX_Nitrate"],
+                                (-3200, 0, 264),
+                                (-3200, 0, 264),
+                                title="CO_2 vs Nitrate Uptake Phenotypic Phase Plane",
+                                xlabel="CO_2 Uptake (mmol/gDW/h)",
+                                ylabel="Nitrate Uptake (mmol/gDW/h)")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""### CO2 vs Phosphate""")
+    return
+
+
+@app.cell
+def _(model, plot_phenotypic_phase_plane):
+    plot_phenotypic_phase_plane(model,
+                                ["EX_CO2"],
+                                ["EX_Phosphate"],
+                                (-1000, 0, 100),
+                                (-1000, 0, 100),
+                                title="CO_2 vs Phosphate Uptake Phenotypic Phase Plane",
+                                xlabel="CO_2 Uptake (mmol/gDW/h)",
+                                ylabel="Phosphate Uptake (mmol/gDW/h)")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""### CO2 vs Citrate""")
+    return
+
+
+@app.cell
+def _(model, plot_phenotypic_phase_plane):
+    plot_phenotypic_phase_plane(model,
+                                ["EX_CO2"],
+                                ["EX_Citrate"],
+                                (-1000, 0, 100),
+                                (-1000, 0, 100),
+                                title="CO_2 vs Citrate Uptake Phenotypic Phase Plane",
+                                xlabel="CO_2 Uptake (mmol/gDW/h)",
+                                ylabel="Citrate Uptake (mmol/gDW/h)")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""### CO2 vs Sulfate""")
+    return
+
+
+@app.cell
+def _(model, plot_phenotypic_phase_plane):
+    plot_phenotypic_phase_plane(model,
+                                ["EX_CO2"],
+                                ["EX_Sulfate"],
+                                (-1000, 0, 100),
+                                (-1000, 0, 100),
+                                title="CO_2 vs Sulfate Uptake Phenotypic Phase Plane",
+                                xlabel="CO_2 Uptake (mmol/gDW/h)",
+                                ylabel="Sulfate Uptake (mmol/gDW/h)")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""### CO2 vs Calcium""")
+    return
+
+
+@app.cell
+def _(model, plot_phenotypic_phase_plane):
+    plot_phenotypic_phase_plane(model,
+                                ["EX_CO2"],
+                                ["EX_Calcium"],
+                                (-1000, 0, 100),
+                                (-1000, 0, 100),
+                                title="CO_2 vs Calcium Uptake Phenotypic Phase Plane",
+                                xlabel="CO_2 Uptake (mmol/gDW/h)",
+                                ylabel="Calcium Uptake (mmol/gDW/h)")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    ### CO2 vs Nitrate, Sulfate, Phosphate and Calcium
+    CO2 and citrate should mainly be _carbon_ sources for UTEX. Then maybe for good growth, UTEX needs both abundant carbon supply and all these "supplements", like vitamins and proteins alongside main energy macronutrients--carbs and fats.
+    """
+    )
+    return
+
+
+@app.cell
+def _(model, plot_phenotypic_phase_plane):
+    plot_phenotypic_phase_plane(model,
+                                ["EX_CO2"],
+                                ["EX_Nitrate", "EX_Sulfate", "EX_Phosphate", "EX_Calcium"],
+                                (-1000, 0, 200),
+                                (-1000, 0, 200),
+                                title="CO_2 vs Nitrate, Sulfate, Phosphate and Calcium Uptake Phenotypic Phase Plane",
+                                xlabel="CO_2 Uptake (mmol/gDW/h)",
+                                ylabel="Nitrate = Sulfate = Phosphate = Calcium Uptake (mmol/gDW/h)")
     return
 
 
@@ -361,9 +697,9 @@ def _(device):
         RangeParameterConfig(name="lb_EX_Cu2_", parameter_type="float", bounds=(-1000, 0)),
         RangeParameterConfig(name="lb_EX_Molybdate", parameter_type="float", bounds=(-1000, 0)),
         RangeParameterConfig(name="lb_EX_Co2_", parameter_type="float", bounds=(-1000, 0)),
-        RangeParameterConfig(name="lb_EX_Nitrate", parameter_type="float", bounds=(-3200, -50)),
-        RangeParameterConfig(name="lb_EX_Phosphate", parameter_type="float", bounds=(-3200, -10)),
-        RangeParameterConfig(name="lb_EX_Sulfate", parameter_type="float", bounds=(-3200, -10)),
+        RangeParameterConfig(name="lb_EX_Nitrate", parameter_type="float", bounds=(-1000, -50)),
+        RangeParameterConfig(name="lb_EX_Phosphate", parameter_type="float", bounds=(-1000, -10)),
+        RangeParameterConfig(name="lb_EX_Sulfate", parameter_type="float", bounds=(-1000, -10)),
         RangeParameterConfig(name="lb_EX_Fe3_", parameter_type="float", bounds=(-1000, 0)),
         RangeParameterConfig(name="lb_EX_Calcium", parameter_type="float", bounds=(-1000, 0)),
         RangeParameterConfig(name="lb_EX_Citrate", parameter_type="float", bounds=(-3000, 0)),
@@ -383,7 +719,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(BG11_uptakes_objective, client):
     NUM_ROUNDS_OPTIM = 20
 

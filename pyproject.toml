@@ -17,5 +17,18 @@ dependencies = [
     "scipy>=1.15.3",
 ]
 
+[project.optional-dependencies]
+gpu = ["torch"]  # torch must be listed here to enable the conditional GPU source
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu128", extra = "gpu" },  # Only active with --extra gpu
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"  # Assumes CUDA 12.8; adjust as needed
+explicit = true
+
 [tool.marimo.runtime]
 output_max_bytes = 10_000_000
