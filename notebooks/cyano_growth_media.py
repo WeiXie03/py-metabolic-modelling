@@ -143,39 +143,48 @@ def _(mo):
 def _(cobra, plt):
     import numpy as np
     from typing import List, Tuple, Optional
+    from mpl_toolkits.mplot3d import Axes3D
+    from typing import List, Tuple, Optional, Dict, Any
+    from dataclasses import dataclass
 
-    def plot_phenotypic_phase_plane(model: cobra.Model,
-                                   rxnsIDs_x: List[str],
-                                   rxnsIDs_y: List[str],
-                                   x_range_spec: Tuple[float, float, int],
-                                   y_range_spec: Tuple[float, float, int],
-                                   title: str,
-                                   xlabel: str,
-                                   ylabel: str,
-                                   obj_rxn_id: Optional[str] = None,
-                                   plot: bool = True) -> Tuple[Tuple[float, float], float, np.ndarray]:
+    @dataclass
+    class PhasePlaneResult:
+        """Container for phase plane analysis results."""
+        X: np.ndarray
+        Y: np.ndarray
+        objective_matrix: np.ndarray
+        best_coordinates: Tuple[float, float]
+        best_objective_value: float
+        x_range: Tuple[float, float]
+        y_range: Tuple[float, float]
+        rxnsIDs_x: List[str]
+        rxnsIDs_y: List[str]
+        total_evaluations: int
+        search_history: List[Dict[str, Any]] = None
+
+    def compute_phase_plane_grid(model: cobra.Model,
+                                rxnsIDs_x: List[str],
+                                rxnsIDs_y: List[str],
+                                x_range: Tuple[float, float],
+                                y_range: Tuple[float, float],
+                                x_steps: int,
+                                y_steps: int,
+                                obj_rxn_id: Optional[str] = None) -> PhasePlaneResult:
         """
-        Plots the phenotypic phase plane for two sets of reactions in a COBRApy model.
+        Compute phase plane analysis for a fixed grid without plotting.
 
         Args:
-            model (cobra.Model): The COBRApy model to analyze.
-            rxnsIDs_x: List of IDs of reactions for the x-axis. If > 1 reaction, 
-                       at every step all their flux lower bounds will be set to the same step value.
-            rxnsIDs_y: List of IDs of reactions for the y-axis. If > 1 reaction, 
-                       at every step all their flux lower bounds will be set to the same step value.
-            x_range_spec: Tuple (min, max, num_steps) specifying the range and number of steps for the x-axis reactions.
-            y_range_spec: Tuple (min, max, num_steps) specifying the range and number of steps for the y-axis reactions.
-            title: Title of the plot.
-            xlabel: Label for the x-axis.
-            ylabel: Label for the y-axis.
-            obj_rxn_id: ID of the reaction to optimize (default: model's current objective).
-            plot: Whether to create the plot (default: True).
+            model: COBRApy model
+            rxnsIDs_x: List of reaction IDs for x-axis
+            rxnsIDs_y: List of reaction IDs for y-axis  
+            x_range: Tuple (min, max) for x-axis range
+            y_range: Tuple (min, max) for y-axis range
+            x_steps: Number of steps for x-axis
+            y_steps: Number of steps for y-axis
+            obj_rxn_id: Optional objective reaction ID
 
         Returns:
-            tuple: (best_lbs, best_objective_value, objective_matrix) where:
-                   - best_lbs is a tuple of the best lower bounds (x, y)
-                   - best_objective_value is the corresponding objective value
-                   - objective_matrix is the 2D array of objective values for plotting
+            PhasePlaneResult object containing all results
         """
 
         # Input validation
@@ -188,96 +197,365 @@ def _(cobra, plt):
             if obj_rxn_id is not None:
                 model.objective = obj_rxn_id
 
-            # Create coordinate arrays using numpy
-            x_values = np.linspace(x_range_spec[0], x_range_spec[1], x_range_spec[2])
-            y_values = np.linspace(y_range_spec[0], y_range_spec[1], y_range_spec[2])
-
-            # Create meshgrid for coordinates
+            # Create coordinate arrays
+            x_values = np.linspace(x_range[0], x_range[1], x_steps)
+            y_values = np.linspace(y_range[0], y_range[1], y_steps)
             X, Y = np.meshgrid(x_values, y_values, indexing='ij')
 
-            # Initialize results matrix, biomass accumulation rate is a flux => >= 0
+            # Initialize results matrix
             objective_matrix = np.zeros(X.shape)
+            evaluation_count = 0
 
-            # Iterate through the meshgrid using numpy's flat indexing
+            # Iterate through all combinations
             for i, (x_val, y_val) in enumerate(zip(X.flat, Y.flat)):
-                # Convert flat index back to 2D indices
                 idx_2d = np.unravel_index(i, X.shape)
 
-                # Set lower bounds for x-axis reactions
+                # Set bounds for reactions
                 for rxn_id in rxnsIDs_x:
                     model.reactions.get_by_id(rxn_id).lower_bound = x_val
-                # Set lower bounds for y-axis reactions  
                 for rxn_id in rxnsIDs_y:
                     model.reactions.get_by_id(rxn_id).lower_bound = y_val
 
-                # Optimize and store result
-                solution = model.slim_optimize(error_value= np.nan, message = f"Optimization failed at x={x_val:.3f}, y={y_val:.3f}")
-                # If optimization fails, slim_optimize will return NaN
+                # Optimize
+                solution = model.slim_optimize(
+                    error_value=np.nan, 
+                    message=f"Optimization failed at x={x_val:.3f}, y={y_val:.3f}")
+                # print(f"Evaluated point {i+1}/{X.size}: x={x_val:.3f}, y={y_val:.3f}, objective={solution}")
                 objective_matrix[idx_2d] = solution
+                evaluation_count += 1
 
-        # Find best solution using numpy operations
-        # Handle NaN values by creating a mask
+        # Find best solution
         valid_mask = ~np.isnan(objective_matrix)
-
         if not np.any(valid_mask):
-            print("No feasible solutions found in the specified ranges.")
-            return (None, None), np.nan, objective_matrix
+            best_coordinates = (None, None)
+            best_objective_value = np.nan
+        else:
+            best_idx = np.nanargmax(objective_matrix)
+            best_idx_2d = np.unravel_index(best_idx, objective_matrix.shape)
+            best_objective_value = objective_matrix[best_idx_2d]
+            best_coordinates = (X[best_idx_2d], Y[best_idx_2d])
 
-        # Find the maximum value and its location
-        best_idx = np.nanargmax(objective_matrix)
-        best_idx_2d = np.unravel_index(best_idx, objective_matrix.shape)
-        best_objective_value = objective_matrix[best_idx_2d]
-        best_lbs = (X[best_idx_2d], Y[best_idx_2d])
+        return PhasePlaneResult(
+            X=X,
+            Y=Y,
+            objective_matrix=objective_matrix,
+            best_coordinates=best_coordinates,
+            best_objective_value=best_objective_value,
+            x_range=x_range,
+            y_range=y_range,
+            rxnsIDs_x=rxnsIDs_x,
+            rxnsIDs_y=rxnsIDs_y,
+            total_evaluations=evaluation_count
+        )
 
-        print(f'Best objective value {best_objective_value:.6f} found at:')
-        print(f'  {rxnsIDs_x} lower bounds = {best_lbs[0]:.6f}')
-        print(f'  {rxnsIDs_y} lower bounds = {best_lbs[1]:.6f}')
+    def hierarchical_phase_plane_search(model: cobra.Model,
+                                      rxnsIDs_x: List[str],
+                                      rxnsIDs_y: List[str],
+                                      initial_x_range: Tuple[float, float],
+                                      initial_y_range: Tuple[float, float],
+                                      levels: int = 4,
+                                      initial_steps: Tuple[int, int] = (100, 100),
+                                      refinement_factor: float = 0.3,
+                                      steps_multiplier: float = 2.2,
+                                      obj_rxn_id: Optional[str] = None,
+                                      min_improvement: float = 1e-6,
+                                      verbose: bool = True) -> PhasePlaneResult:
+        """
+        Hierarchical grid search that progressively refines the search space.
+    
+        This function starts with a coarse grid over the entire search space, identifies
+        the most promising region, then zooms into that region with a finer grid. This
+        process continues for the specified number of levels.
+    
+        Args:
+            model: COBRApy model
+            rxnsIDs_x, rxnsIDs_y: Lists of reaction IDs for x and y axes
+            initial_x_range, initial_y_range: Initial search ranges
+            levels: Number of hierarchical refinement levels
+            initial_steps: Grid resolution for first level (x_steps, y_steps)
+            refinement_factor: Fraction of current range to use for next level (0.0-1.0)
+            steps_multiplier: Factor to increase grid resolution at each level
+            obj_rxn_id: Optional objective reaction ID
+            min_improvement: Minimum improvement required to continue refinement
+            verbose: Whether to print progress
+    
+        Returns:
+            PhasePlaneResult with search history
+        """
+    
+        current_x_range = initial_x_range
+        current_y_range = initial_y_range
+        current_steps = initial_steps
+        search_history = []
+    
+        best_overall_objective = -np.inf
+        best_overall_coords = (0, 0)
+        total_evaluations = 0
+    
+        for level in range(levels):
+            if verbose:
+                print(f"Level {level + 1}/{levels}:")
+                print(f"  Search range: x={current_x_range}, y={current_y_range}")
+                print(f"  Grid resolution: {current_steps[0]}x{current_steps[1]}")
+        
+            # Compute phase plane for current level
+            result = compute_phase_plane_grid(
+                model, rxnsIDs_x, rxnsIDs_y,
+                current_x_range, current_y_range,
+                int(current_steps[0]), int(current_steps[1]),
+                obj_rxn_id
+            )
+        
+            total_evaluations += result.total_evaluations
+        
+            # Store search step
+            search_history.append({
+                'level': level + 1,
+                'x_range': current_x_range,
+                'y_range': current_y_range,
+                'grid_size': current_steps,
+                'best_coordinates': result.best_coordinates,
+                'best_objective': result.best_objective_value,
+                'evaluations': result.total_evaluations
+            })
+        
+            # Check if we found a feasible solution
+            if np.isnan(result.best_objective_value):
+                if verbose:
+                    print(f"  No feasible solutions found at this level")
+                break
+        
+            # Check for improvement
+            improvement = result.best_objective_value - best_overall_objective
+            if improvement < min_improvement and level > 0:
+                if verbose:
+                    print(f"  Insufficient improvement ({improvement:.2e}), stopping refinement")
+                break
+        
+            # Update best overall solution
+            if result.best_objective_value > best_overall_objective:
+                best_overall_objective = result.best_objective_value
+                best_overall_coords = result.best_coordinates
+        
+            if verbose:
+                print(f"  Best objective: {result.best_objective_value:.6f} at {result.best_coordinates}")
+                print(f"  Improvement: {improvement:.6f}")
+        
+            # Prepare for next level (if not the last level)
+            if level < levels - 1:
+                x_opt, y_opt = result.best_coordinates
+            
+                # Calculate current range sizes
+                x_range_size = current_x_range[1] - current_x_range[0]
+                y_range_size = current_y_range[1] - current_y_range[0]
+            
+                # Calculate new range sizes (refined)
+                new_x_range_size = x_range_size * refinement_factor
+                new_y_range_size = y_range_size * refinement_factor
+            
+                # Center new ranges around the optimum
+                new_x_min = x_opt - new_x_range_size / 2
+                new_x_max = x_opt + new_x_range_size / 2
+                new_y_min = y_opt - new_y_range_size / 2
+                new_y_max = y_opt + new_y_range_size / 2
+            
+                # Ensure we don't go outside the original bounds
+                new_x_min = max(new_x_min, initial_x_range[0])
+                new_x_max = min(new_x_max, initial_x_range[1])
+                new_y_min = max(new_y_min, initial_y_range[0])
+                new_y_max = min(new_y_max, initial_y_range[1])
+            
+                # Update ranges and steps for next level
+                current_x_range = (new_x_min, new_x_max)
+                current_y_range = (new_y_min, new_y_max)
+                current_steps = (int(current_steps[0] * steps_multiplier),
+                               int(current_steps[1] * steps_multiplier))
+            
+                if verbose:
+                    print(f"  Refining to {refinement_factor:.1%} of current range")
+                    print()
+    
+        # Create final result using the last computed grid
+        final_result = result
+        final_result.search_history = search_history
+        final_result.total_evaluations = total_evaluations
+        final_result.best_coordinates = best_overall_coords
+        final_result.best_objective_value = best_overall_objective
+    
+        if verbose:
+            print(f"Hierarchical search completed:")
+            print(f"  Total levels: {len(search_history)}")
+            print(f"  Total evaluations: {total_evaluations}")
+            print(f"  Final best objective: {best_overall_objective:.6f}")
+            print(f"  Final best coordinates: x={best_overall_coords[0]:.6f}, y={best_overall_coords[1]:.6f}")
+    
+        return final_result
 
-        # Create the plot if requested
-        if plot:
+    def plot_phase_plane_result(result: PhasePlaneResult,
+                               title: str,
+                               xlabel: str,
+                               ylabel: str,
+                               plot_type: str = '3d') -> None:
+        """
+        Plot phase plane results.
+
+        Args:
+            result: PhasePlaneResult object
+            title, xlabel, ylabel: Plot labels
+            plot_type: '2d', '3d', or 'both'
+        """
+
+        if plot_type in ['2d', 'both']:
+            # 2D Contour Plot
             fig, ax = plt.subplots(figsize=(10, 8))
 
-            # Create contour plot
-            contour = ax.contourf(X, Y, objective_matrix, levels=20, cmap='viridis')
-
-            # Add contour lines
-            contour_lines = ax.contour(X, Y, objective_matrix, levels=10, colors='white', alpha=0.5, linewidths=0.5)
+            contour = ax.contourf(result.X, result.Y, result.objective_matrix, 
+                                 levels=20, cmap='viridis')
+            contour_lines = ax.contour(result.X, result.Y, result.objective_matrix, 
+                                      levels=10, colors='white', alpha=0.5, linewidths=0.5)
             ax.clabel(contour_lines, inline=True, fontsize=8)
 
-            # Mark the best point
-            if not np.isnan(best_objective_value):
-                ax.plot(best_lbs[0], best_lbs[1], 'r*', markersize=15, label=f'Best: {best_objective_value:.4f}')
+            if not np.isnan(result.best_objective_value):
+                ax.plot(result.best_coordinates[0], result.best_coordinates[1], 'r*', 
+                       markersize=15, label=f'Best: {result.best_objective_value:.4f}')
 
-            # Add colorbar
             cbar = plt.colorbar(contour, ax=ax)
             cbar.set_label('Objective Value')
 
-            # Labels and title
             ax.set_xlabel(xlabel)
             ax.set_ylabel(ylabel)
-            ax.set_title(title)
-            ax.legend()
+            ax.set_title(f'{title} (2D)')
+            if not np.isnan(result.best_objective_value):
+                ax.legend()
             ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+
+            if plot_type == '2d':
+                plt.show()
+
+        if plot_type in ['3d', 'both']:
+            # 3D Surface Plot
+            fig = plt.figure(figsize=(12, 9))
+            ax = fig.add_subplot(111, projection='3d')
+
+            surf = ax.plot_surface(result.X, result.Y, result.objective_matrix, 
+                                 cmap='viridis', alpha=0.8,
+                                 linewidth=0, antialiased=True)
+
+            ax.plot_wireframe(result.X, result.Y, result.objective_matrix, 
+                            color='white', alpha=0.3, linewidth=0.5)
+
+            if not np.isnan(result.best_objective_value):
+                ax.scatter(result.best_coordinates[0], result.best_coordinates[1], 
+                          result.best_objective_value, color='red', s=100, alpha=1.0,
+                          label=f'Best: {result.best_objective_value:.4f}')
+
+            cbar = fig.colorbar(surf, ax=ax, shrink=0.5, aspect=20)
+            cbar.set_label('Objective Value')
+
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel(ylabel)
+            ax.set_zlabel('Objective Value')
+            ax.set_title(f'{title} (3D)')
+            ax.view_init(elev=30, azim=45)
+
+            if not np.isnan(result.best_objective_value):
+                ax.legend()
 
             plt.tight_layout()
+
+            if plot_type == '3d':
+                plt.show()
+
+        if plot_type == 'both':
             plt.show()
 
-        return best_lbs, best_objective_value, objective_matrix
+        # uptake rates are negative of fluxes => put origin closest to observer
+        ax.invert_xaxis()
+        ax.invert_yaxis()
 
-
-    def analyze_phase_plane_statistics(objective_matrix: np.ndarray, 
-                                     X: np.ndarray, 
-                                     Y: np.ndarray) -> dict:
+    def plot_search_hierarchy(result: PhasePlaneResult, title: str = "Hierarchical Phase Plane Search"):
         """
-        Analyze statistics of the phase plane results.
+        Visualize the hierarchical search process.
+    
+        Args:
+            result: PhasePlaneResult with search_history
+            title: Plot title
+        """
+        if result.search_history is None:
+            print("No search history available for plotting")
+            return
+    
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+        # Plot 1: Search regions at each level
+        ax1.set_title("Search Regions by Level")
+        colors = plt.cm.viridis(np.linspace(0, 1, len(result.search_history)))
+    
+        for i, step in enumerate(result.search_history):
+            x_range = step['x_range']
+            y_range = step['y_range']
+        
+            # Draw rectangle for search region
+            rect = plt.Rectangle((x_range[0], y_range[0]), 
+                               x_range[1] - x_range[0], 
+                               y_range[1] - y_range[0],
+                               fill=False, edgecolor=colors[i], linewidth=2,
+                               label=f"Level {step['level']}")
+            ax1.add_patch(rect)
+        
+            # Mark optimum for this level
+            x_opt, y_opt = step['best_coordinates']
+            ax1.plot(x_opt, y_opt, 'o', color=colors[i], markersize=8)
+        
+            # Add text annotation
+            ax1.annotate(f"L{step['level']}", (x_opt, y_opt), 
+                        xytext=(5, 5), textcoords='offset points',
+                        fontsize=10, color=colors[i], weight='bold')
+    
+        ax1.set_xlabel('X-axis Flux')
+        ax1.set_ylabel('Y-axis Flux')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+    
+        # Plot 2: Objective value progression
+        ax2.set_title("Best Objective by Level")
+        levels = [step['level'] for step in result.search_history]
+        objectives = [step['best_objective'] for step in result.search_history if not np.isnan(step['best_objective'])]
+        evaluations = [step['evaluations'] for step in result.search_history]
+    
+        ax2_twin = ax2.twinx()
+    
+        line1 = ax2.plot(levels[:len(objectives)], objectives, 'bo-', linewidth=2, label='Best Objective')
+        line2 = ax2_twin.plot(levels, evaluations, 'ro-', linewidth=2, label='Evaluations')
+    
+        ax2.set_xlabel('Refinement Level')
+        ax2.set_ylabel('Best Objective Value', color='blue')
+        ax2_twin.set_ylabel('Number of Evaluations', color='red')
+        ax2.grid(True, alpha=0.3)
+    
+        # Combine legends
+        lines1, labels1 = ax2.get_legend_handles_labels()
+        lines2, labels2 = ax2_twin.get_legend_handles_labels()
+        ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+    
+        plt.tight_layout()
+        plt.suptitle(title, y=1.02)
+        plt.show()
+
+    def analyze_phase_plane_statistics(result: PhasePlaneResult) -> dict:
+        """
+        Analyze statistics of phase plane results.
 
         Args:
-            objective_matrix: 2D array of objective values
-            X, Y: Meshgrid arrays for x and y coordinates
+            result: PhasePlaneResult object
 
         Returns:
             Dictionary containing various statistics
         """
+        objective_matrix = result.objective_matrix
+        X, Y = result.X, result.Y
+
         valid_mask = ~np.isnan(objective_matrix)
         valid_values = objective_matrix[valid_mask]
 
@@ -291,20 +569,28 @@ def _(cobra, plt):
             "max_objective": np.max(valid_values),
             "feasible_fraction": np.sum(valid_mask) / objective_matrix.size,
             "total_points": objective_matrix.size,
-            "feasible_points": np.sum(valid_mask)
+            "feasible_points": np.sum(valid_mask),
+            "x_range_final": result.x_range,
+            "y_range_final": result.y_range,
+            "total_evaluations": result.total_evaluations
         }
 
         # Find coordinates of best solutions (top 5%)
-        threshold = np.percentile(valid_values, 95)
-        top_solutions_mask = (objective_matrix >= threshold) & valid_mask
-        top_x = X[top_solutions_mask]
-        top_y = Y[top_solutions_mask]
+        if len(valid_values) > 0:
+            threshold = np.percentile(valid_values, 95)
+            top_solutions_mask = (objective_matrix >= threshold) & valid_mask
+            top_x = X[top_solutions_mask]
+            top_y = Y[top_solutions_mask]
 
-        stats["top_5_percent_x_range"] = (np.min(top_x), np.max(top_x))
-        stats["top_5_percent_y_range"] = (np.min(top_y), np.max(top_y))
+            stats["top_5_percent_x_range"] = (np.min(top_x), np.max(top_x))
+            stats["top_5_percent_y_range"] = (np.min(top_y), np.max(top_y))
 
         return stats
-    return (plot_phenotypic_phase_plane,)
+    return (
+        compute_phase_plane_grid,
+        hierarchical_phase_plane_search,
+        plot_phase_plane_result,
+    )
 
 
 @app.cell
@@ -314,15 +600,38 @@ def _(mo):
 
 
 @app.cell
-def _(model, plot_phenotypic_phase_plane):
-    plot_phenotypic_phase_plane(model,
-                                ["EX_CO2"],
-                                ["EX_PHO1", "EX_PHO2"],
-                                (-3200, 0, 264),
-                                (-3200, 0, 264),
-                                title="CO_2 vs Light Uptake Phenotypic Phase Plane",
-                                xlabel="CO_2 Uptake (mmol/gDW/h)",
-                                ylabel="Light Uptake: Photosystem I Uptake = Photosystem II Uptake (\\mu E/m^2/s)")
+def _(compute_phase_plane_grid, model, plot_phase_plane_result):
+    PhPP_CO2_light = compute_phase_plane_grid(model,
+                                              ["EX_CO2"],
+                                              ["EX_PHO1", "EX_PHO2"],
+                                              (-3200, 0),
+                                              (-3200, 0),
+                                              264,
+                                              264)
+    plot_phase_plane_result(PhPP_CO2_light,
+                            title="$CO_2$ vs Light Uptake Phenotypic Phase Plane",
+                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
+                            ylabel="Light Uptake: Photosystem I Uptake = Photosystem II Uptake ($\\mu E/m^2/s$)")
+    return
+
+
+@app.cell
+def _(
+    adaptive_PhPP_CO2_light,
+    hierarchical_phase_plane_search,
+    model,
+    plot_phase_plane_result,
+):
+    hierarchical_PhPP_CO2_light = hierarchical_phase_plane_search(model,
+                                    ["EX_CO2"],
+                                    ["EX_PHO1", "EX_PHO2"],
+                                    (-10000, 10),
+                                    (-10000, 10)
+    )
+    plot_phase_plane_result(adaptive_PhPP_CO2_light,
+                            title="$CO_2$ vs Light Uptake Phenotypic Phase Plane",
+                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
+                            ylabel="Light Uptake: Photosystem I Uptake = Photosystem II Uptake ($\\mu E/m^2/s$)")
     return
 
 
@@ -333,15 +642,16 @@ def _(mo):
 
 
 @app.cell
-def _(model, plot_phenotypic_phase_plane):
-    plot_phenotypic_phase_plane(model,
-                                ["EX_CO2"],
-                                ["EX_NH3"],
-                                (-3200, 0, 264),
-                                (-3200, 0, 264),
-                                title="CO2 vs Ammonia Uptake Phenotypic Phase Plane",
-                                xlabel="CO_2 Uptake (mmol/gDW/h)",
-                                ylabel="NH_3 Uptake (mmol/gDW/h)")
+def _(hierarchical_phase_plane_search, model, plot_phase_plane_result):
+    PhPP_CO2_NH3 = hierarchical_phase_plane_search(model,
+                                                   ["EX_CO2"],
+                                                   ["EX_NH3"],
+                                                   (-10000, 10),
+                                                   (-10000, 10))
+    plot_phase_plane_result(PhPP_CO2_NH3,
+                            title="$CO_2$ vs Ammonia Uptake Phenotypic Phase Plane",
+                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
+                            ylabel="$NH_3$ Uptake (mmol/gDW/h)")
     return
 
 
@@ -352,15 +662,16 @@ def _(mo):
 
 
 @app.cell
-def _(model, plot_phenotypic_phase_plane):
-    plot_phenotypic_phase_plane(model,
-                                ["EX_CO2"],
-                                ["EX_Nitrate"],
-                                (-3200, 0, 264),
-                                (-3200, 0, 264),
-                                title="CO_2 vs Nitrate Uptake Phenotypic Phase Plane",
-                                xlabel="CO_2 Uptake (mmol/gDW/h)",
-                                ylabel="Nitrate Uptake (mmol/gDW/h)")
+def _(hierarchical_phase_plane_search, model, plot_phase_plane_result):
+    PhPP_CO2_Nitrate = hierarchical_phase_plane_search(model,
+                                                       ["EX_CO2"],
+                                                       ["EX_Nitrate"],
+                                                       (-10000, 10),
+                                                       (-10000, 10))
+    plot_phase_plane_result(PhPP_CO2_Nitrate,
+                            title="$CO_2$ vs Nitrate Uptake Phenotypic Phase Plane",
+                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
+                            ylabel="Nitrate Uptake (mmol/gDW/h)")
     return
 
 
@@ -371,15 +682,16 @@ def _(mo):
 
 
 @app.cell
-def _(model, plot_phenotypic_phase_plane):
-    plot_phenotypic_phase_plane(model,
-                                ["EX_CO2"],
-                                ["EX_Phosphate"],
-                                (-1000, 0, 100),
-                                (-1000, 0, 100),
-                                title="CO_2 vs Phosphate Uptake Phenotypic Phase Plane",
-                                xlabel="CO_2 Uptake (mmol/gDW/h)",
-                                ylabel="Phosphate Uptake (mmol/gDW/h)")
+def _(hierarchical_phase_plane_search, model, plot_phase_plane_result):
+    PhPP_CO2_Phosphate = hierarchical_phase_plane_search(model,
+                                                         ["EX_CO2"],
+                                                         ["EX_Phosphate"],
+                                                         (-10000, 10),
+                                                         (-10000, 10))
+    plot_phase_plane_result(PhPP_CO2_Phosphate,
+                            title="$CO_2$ vs Phosphate Uptake Phenotypic Phase Plane",
+                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
+                            ylabel="Phosphate Uptake (mmol/gDW/h)")
     return
 
 
@@ -390,15 +702,16 @@ def _(mo):
 
 
 @app.cell
-def _(model, plot_phenotypic_phase_plane):
-    plot_phenotypic_phase_plane(model,
-                                ["EX_CO2"],
-                                ["EX_Citrate"],
-                                (-1000, 0, 100),
-                                (-1000, 0, 100),
-                                title="CO_2 vs Citrate Uptake Phenotypic Phase Plane",
-                                xlabel="CO_2 Uptake (mmol/gDW/h)",
-                                ylabel="Citrate Uptake (mmol/gDW/h)")
+def _(hierarchical_phase_plane_search, model, plot_phase_plane_result):
+    PhPP_CO2_Citrate = hierarchical_phase_plane_search(model,
+                                                       ["EX_CO2"],
+                                                       ["EX_Citrate"],
+                                                       (-10000, 10),
+                                                       (-10000, 10))
+    plot_phase_plane_result(PhPP_CO2_Citrate,
+                            title="$CO_2$ vs Citrate Uptake Phenotypic Phase Plane",
+                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
+                            ylabel="Citrate Uptake (mmol/gDW/h)")
     return
 
 
@@ -409,15 +722,16 @@ def _(mo):
 
 
 @app.cell
-def _(model, plot_phenotypic_phase_plane):
-    plot_phenotypic_phase_plane(model,
-                                ["EX_CO2"],
-                                ["EX_Sulfate"],
-                                (-1000, 0, 100),
-                                (-1000, 0, 100),
-                                title="CO_2 vs Sulfate Uptake Phenotypic Phase Plane",
-                                xlabel="CO_2 Uptake (mmol/gDW/h)",
-                                ylabel="Sulfate Uptake (mmol/gDW/h)")
+def _(hierarchical_phase_plane_search, model, plot_phase_plane_result):
+    PhPP_CO2_Sulfate = hierarchical_phase_plane_search(model,
+                                                       ["EX_CO2"],
+                                                       ["EX_Sulfate"],
+                                                       (-10000, 10),
+                                                       (-10000, 10))
+    plot_phase_plane_result(PhPP_CO2_Sulfate,
+                            title="$CO_2$ vs Sulfate Uptake Phenotypic Phase Plane",
+                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
+                            ylabel="Sulfate Uptake (mmol/gDW/h)")
     return
 
 
@@ -428,15 +742,16 @@ def _(mo):
 
 
 @app.cell
-def _(model, plot_phenotypic_phase_plane):
-    plot_phenotypic_phase_plane(model,
-                                ["EX_CO2"],
-                                ["EX_Calcium"],
-                                (-1000, 0, 100),
-                                (-1000, 0, 100),
-                                title="CO_2 vs Calcium Uptake Phenotypic Phase Plane",
-                                xlabel="CO_2 Uptake (mmol/gDW/h)",
-                                ylabel="Calcium Uptake (mmol/gDW/h)")
+def _(hierarchical_phase_plane_search, model, plot_phase_plane_result):
+    PhPP_CO2_Ca = hierarchical_phase_plane_search(model,
+                                                  ["EX_CO2"],
+                                                  ["EX_Calcium"],
+                                                  (-10000, 10),
+                                                  (-10000, 10))
+    plot_phase_plane_result(PhPP_CO2_Ca,
+                            title="$CO_2$ vs Calcium Uptake Phenotypic Phase Plane",
+                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
+                            ylabel="Calcium Uptake (mmol/gDW/h)")
     return
 
 
@@ -452,15 +767,16 @@ def _(mo):
 
 
 @app.cell
-def _(model, plot_phenotypic_phase_plane):
-    plot_phenotypic_phase_plane(model,
-                                ["EX_CO2"],
-                                ["EX_Nitrate", "EX_Sulfate", "EX_Phosphate", "EX_Calcium"],
-                                (-1000, 0, 200),
-                                (-1000, 0, 200),
-                                title="CO_2 vs Nitrate, Sulfate, Phosphate and Calcium Uptake Phenotypic Phase Plane",
-                                xlabel="CO_2 Uptake (mmol/gDW/h)",
-                                ylabel="Nitrate = Sulfate = Phosphate = Calcium Uptake (mmol/gDW/h)")
+def _(hierarchical_phase_plane_search, model, plot_phase_plane_result):
+    PhPP_CO2_multinutrients = hierarchical_phase_plane_search(model,
+                                                              ["EX_CO2"],
+                                                              ["EX_Nitrate", "EX_Sulfate", "EX_Phosphate", "EX_Calcium"],
+                                                              (-10000, 10),
+                                                              (-10000, 10))
+    plot_phase_plane_result(PhPP_CO2_multinutrients,
+                            title="$CO_2$ vs Nitrate, Sulfate, Phosphate and Calcium Uptake Phenotypic Phase Plane",
+                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
+                            ylabel="Nitrate = Sulfate = Phosphate = Calcium Uptake (mmol/gDW/h)")
     return
 
 
