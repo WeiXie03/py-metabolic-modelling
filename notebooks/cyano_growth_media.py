@@ -3,6 +3,10 @@ import marimo
 __generated_with = "0.15.0"
 app = marimo.App(width="medium")
 
+with app.setup:
+    # Initialization code that runs before all other cells
+    pass
+
 
 @app.cell
 def _(mo):
@@ -21,14 +25,10 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    mo.md(r"""## Load model""")
-    return
-
-
-@app.cell
-def _(mo):
     mo.md(
         r"""
+    ## Load model
+
     We are using the
     >composite GSM model for both Synechococcus 7942 and Synechococcus 2973
 
@@ -64,6 +64,8 @@ def _():
     # PROCD_DATA_DIR = ROOT_DIR / "data" / "processed"
 
     model = read_sbml_model(RAW_DATA_DIR / "SBMLmodel_UTEX2973.xml")
+
+    model.solver = "gurobi"
     return cobra, mo, model
 
 
@@ -229,11 +231,14 @@ def _(cobra, plt):
         if not np.any(valid_mask):
             best_coordinates = (None, None)
             best_objective_value = np.nan
+            print("No feasible solutions found in the grid.")
         else:
             best_idx = np.nanargmax(objective_matrix)
             best_idx_2d = np.unravel_index(best_idx, objective_matrix.shape)
             best_objective_value = objective_matrix[best_idx_2d]
             best_coordinates = (X[best_idx_2d], Y[best_idx_2d])
+
+            print(f"Best objective value: {best_objective_value:.6f} at coordinates x={best_coordinates[0]:.6f}, y={best_coordinates[1]:.6f}")
 
         return PhasePlaneResult(
             X=X,
@@ -262,11 +267,11 @@ def _(cobra, plt):
                                       verbose: bool = True) -> PhasePlaneResult:
         """
         Hierarchical grid search that progressively refines the search space.
-    
+
         This function starts with a coarse grid over the entire search space, identifies
         the most promising region, then zooms into that region with a finer grid. This
         process continues for the specified number of levels.
-    
+
         Args:
             model: COBRApy model
             rxnsIDs_x, rxnsIDs_y: Lists of reaction IDs for x and y axes
@@ -278,26 +283,26 @@ def _(cobra, plt):
             obj_rxn_id: Optional objective reaction ID
             min_improvement: Minimum improvement required to continue refinement
             verbose: Whether to print progress
-    
+
         Returns:
             PhasePlaneResult with search history
         """
-    
+
         current_x_range = initial_x_range
         current_y_range = initial_y_range
         current_steps = initial_steps
         search_history = []
-    
+
         best_overall_objective = -np.inf
         best_overall_coords = (0, 0)
         total_evaluations = 0
-    
+
         for level in range(levels):
             if verbose:
                 print(f"Level {level + 1}/{levels}:")
                 print(f"  Search range: x={current_x_range}, y={current_y_range}")
                 print(f"  Grid resolution: {current_steps[0]}x{current_steps[1]}")
-        
+
             # Compute phase plane for current level
             result = compute_phase_plane_grid(
                 model, rxnsIDs_x, rxnsIDs_y,
@@ -305,9 +310,9 @@ def _(cobra, plt):
                 int(current_steps[0]), int(current_steps[1]),
                 obj_rxn_id
             )
-        
+
             total_evaluations += result.total_evaluations
-        
+
             # Store search step
             search_history.append({
                 'level': level + 1,
@@ -318,77 +323,77 @@ def _(cobra, plt):
                 'best_objective': result.best_objective_value,
                 'evaluations': result.total_evaluations
             })
-        
+
             # Check if we found a feasible solution
             if np.isnan(result.best_objective_value):
                 if verbose:
                     print(f"  No feasible solutions found at this level")
                 break
-        
+
             # Check for improvement
             improvement = result.best_objective_value - best_overall_objective
             if improvement < min_improvement and level > 0:
                 if verbose:
                     print(f"  Insufficient improvement ({improvement:.2e}), stopping refinement")
                 break
-        
+
             # Update best overall solution
             if result.best_objective_value > best_overall_objective:
                 best_overall_objective = result.best_objective_value
                 best_overall_coords = result.best_coordinates
-        
+
             if verbose:
                 print(f"  Best objective: {result.best_objective_value:.6f} at {result.best_coordinates}")
                 print(f"  Improvement: {improvement:.6f}")
-        
+
             # Prepare for next level (if not the last level)
             if level < levels - 1:
                 x_opt, y_opt = result.best_coordinates
-            
+
                 # Calculate current range sizes
                 x_range_size = current_x_range[1] - current_x_range[0]
                 y_range_size = current_y_range[1] - current_y_range[0]
-            
+
                 # Calculate new range sizes (refined)
                 new_x_range_size = x_range_size * refinement_factor
                 new_y_range_size = y_range_size * refinement_factor
-            
+
                 # Center new ranges around the optimum
                 new_x_min = x_opt - new_x_range_size / 2
                 new_x_max = x_opt + new_x_range_size / 2
                 new_y_min = y_opt - new_y_range_size / 2
                 new_y_max = y_opt + new_y_range_size / 2
-            
+
                 # Ensure we don't go outside the original bounds
                 new_x_min = max(new_x_min, initial_x_range[0])
                 new_x_max = min(new_x_max, initial_x_range[1])
                 new_y_min = max(new_y_min, initial_y_range[0])
                 new_y_max = min(new_y_max, initial_y_range[1])
-            
+
                 # Update ranges and steps for next level
                 current_x_range = (new_x_min, new_x_max)
                 current_y_range = (new_y_min, new_y_max)
                 current_steps = (int(current_steps[0] * steps_multiplier),
                                int(current_steps[1] * steps_multiplier))
-            
+
                 if verbose:
                     print(f"  Refining to {refinement_factor:.1%} of current range")
                     print()
-    
+
         # Create final result using the last computed grid
         final_result = result
         final_result.search_history = search_history
         final_result.total_evaluations = total_evaluations
         final_result.best_coordinates = best_overall_coords
         final_result.best_objective_value = best_overall_objective
-    
+
         if verbose:
             print(f"Hierarchical search completed:")
             print(f"  Total levels: {len(search_history)}")
             print(f"  Total evaluations: {total_evaluations}")
             print(f"  Final best objective: {best_overall_objective:.6f}")
             print(f"  Final best coordinates: x={best_overall_coords[0]:.6f}, y={best_overall_coords[1]:.6f}")
-    
+
         return final_result
 
     def plot_phase_plane_result(result: PhasePlaneResult,
@@ -477,7 +482,7 @@ def _(cobra, plt):
     def plot_search_hierarchy(result: PhasePlaneResult, title: str = "Hierarchical Phase Plane Search"):
         """
         Visualize the hierarchical search process.
-    
+
         Args:
             result: PhasePlaneResult with search_history
             title: Plot title
@@ -485,17 +490,17 @@ def _(cobra, plt):
         if result.search_history is None:
             print("No search history available for plotting")
             return
-    
+
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-    
+
         # Plot 1: Search regions at each level
         ax1.set_title("Search Regions by Level")
         colors = plt.cm.viridis(np.linspace(0, 1, len(result.search_history)))
-    
+
         for i, step in enumerate(result.search_history):
             x_range = step['x_range']
             y_range = step['y_range']
-        
+
             # Draw rectangle for search region
             rect = plt.Rectangle((x_range[0], y_range[0]), 
                                x_range[1] - x_range[0], 
@@ -503,42 +508,42 @@ def _(cobra, plt):
                                fill=False, edgecolor=colors[i], linewidth=2,
                                label=f"Level {step['level']}")
             ax1.add_patch(rect)
-        
+
             # Mark optimum for this level
             x_opt, y_opt = step['best_coordinates']
             ax1.plot(x_opt, y_opt, 'o', color=colors[i], markersize=8)
-        
+
             # Add text annotation
             ax1.annotate(f"L{step['level']}", (x_opt, y_opt), 
                         xytext=(5, 5), textcoords='offset points',
                         fontsize=10, color=colors[i], weight='bold')
-    
+
         ax1.set_xlabel('X-axis Flux')
         ax1.set_ylabel('Y-axis Flux')
         ax1.legend()
         ax1.grid(True, alpha=0.3)
-    
+
         # Plot 2: Objective value progression
         ax2.set_title("Best Objective by Level")
         levels = [step['level'] for step in result.search_history]
         objectives = [step['best_objective'] for step in result.search_history if not np.isnan(step['best_objective'])]
         evaluations = [step['evaluations'] for step in result.search_history]
-    
+
         ax2_twin = ax2.twinx()
-    
+
         line1 = ax2.plot(levels[:len(objectives)], objectives, 'bo-', linewidth=2, label='Best Objective')
         line2 = ax2_twin.plot(levels, evaluations, 'ro-', linewidth=2, label='Evaluations')
-    
+
         ax2.set_xlabel('Refinement Level')
         ax2.set_ylabel('Best Objective Value', color='blue')
         ax2_twin.set_ylabel('Number of Evaluations', color='red')
         ax2.grid(True, alpha=0.3)
-    
+
         # Combine legends
         lines1, labels1 = ax2.get_legend_handles_labels()
         lines2, labels2 = ax2_twin.get_legend_handles_labels()
         ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
-    
+
         plt.tight_layout()
         plt.suptitle(title, y=1.02)
         plt.show()
@@ -616,19 +621,14 @@ def _(compute_phase_plane_grid, model, plot_phase_plane_result):
 
 
 @app.cell
-def _(
-    adaptive_PhPP_CO2_light,
-    hierarchical_phase_plane_search,
-    model,
-    plot_phase_plane_result,
-):
+def _(hierarchical_phase_plane_search, model, plot_phase_plane_result):
     hierarchical_PhPP_CO2_light = hierarchical_phase_plane_search(model,
                                     ["EX_CO2"],
                                     ["EX_PHO1", "EX_PHO2"],
                                     (-10000, 10),
                                     (-10000, 10)
     )
-    plot_phase_plane_result(adaptive_PhPP_CO2_light,
+    plot_phase_plane_result(hierarchical_PhPP_CO2_light,
                             title="$CO_2$ vs Light Uptake Phenotypic Phase Plane",
                             xlabel="$CO_2$ Uptake (mmol/gDW/h)",
                             ylabel="Light Uptake: Photosystem I Uptake = Photosystem II Uptake ($\\mu E/m^2/s$)")
@@ -949,8 +949,7 @@ def _(model):
                 _rxn = model.reactions.get_by_id(_rxn_id)
                 _rxn.lower_bound = _lower_bound
                 _rxn.upper_bound = _upper_bound
-        solution = model.optimize()
-        return solution.objective_value
+        return model.slim_optimize()
 
     def BG11_uptakes_objective(lb_EX_CO2: float,
                                 lb_EX_PHO1: float,
@@ -1035,7 +1034,7 @@ def _(mo):
     return
 
 
-@app.cell(disabled=True)
+@app.cell
 def _(BG11_uptakes_objective, client):
     NUM_ROUNDS_OPTIM = 20
 
@@ -1054,16 +1053,108 @@ def _(BG11_uptakes_objective, client):
 
 @app.cell
 def _(client):
-    # best_params, pred, best_idx, nm = client.get_best_parameterization()
-    client.get_best_parameterization()
-    # print("Best parameters:", best_params)
-    # print("Best objective value: (mean, variance)", pred)
+    best_params, pred, best_idx, nm = client.get_best_parameterization()
+    print("Best parameters:", best_params)
+    print(f"Best objective value: {pred[0]} +/- {pred[1]}")
     return
 
 
 @app.cell
 def _(client):
     cards = client.compute_analyses(display=True)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    # Translating to Real Concentrations
+    Now that we finally have the predicted best set of uptake rates for BG-11 media components, it's time to put them to actual use in the wet lab.
+
+    So, how much of each component do we add to our media? We need to translate *uptake rates* to *concentrations*. *Fluxes* are **not** equivalent to *concentrations*--the former are in $\mathrm{mmol} \cdot \mathrm{gDW^{-1}} \cdot \mathrm{hr^{-1}}$, while the latter in $\mathrm{g} \cdot \mathrm{L^{-1}}$. It's not just a simple unit conversion. Instead, we've a bit more planning to do and assumptions to make.
+
+    - For now, let's say we'll only "feed" our cyano culture once, at the start of the experiment. So we need to make sure that the initial concentration is enough to sustain the uptake for the entire duration of the experiment.
+
+    """
+    )
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    Now for translating fluxes to concentrations, we need to compute compute projected growth to multiply away the $\mathrm{gDW}$ in the denominator. We can get this from
+    $\frac {m_0 + \Delta m} {m_0}
+    = \frac
+        {m_0 + \int_{t=0}^{\Delta t} v_{\mathtt{biomass}} \mathrm{d}t}
+        {m_0}
+    = \frac
+        {m_0 + v_{\mathtt{biomass}}\Delta t}
+        {m_0}$,
+    except that $v_{\mathtt{biomass}}$ is in $\mathrm{mmol} \cdot \mathrm{gDW}^{-1} \cdot \mathrm{hr}^{-1}$, so $v_{\mathtt{biomass}}\Delta t$ would be in $\mathrm{mmol} \cdot \mathrm{gDW}^{-1}$.
+
+    Now, remember, $\mathrm{mmol}$ of what? $\text{mmol biomass}$. And what is dry weight? _Biomass_. Then all that's left is to figure out how many grams of biomass is one mmol of biomass, which means we need to find the **molecular weight of biomass** as defined by the biomass exchange "reaction".
+    """
+    )
+    return
+
+
+@app.cell
+def _(model):
+    # Let's dig up the composition of the biomass objective function
+    model
+    return
+
+
+@app.cell
+def _(model):
+    model.objective
+    return
+
+
+@app.cell
+def _(model):
+    biomass_rxn = model.reactions.Biomass_Auto_2973
+    biomass_rxn
+    return (biomass_rxn,)
+
+
+@app.cell
+def _(biomass_rxn):
+    biomass_rxn.check_mass_balance()
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""Uhhhhhmmm... well that's not good.""")
+    return
+
+
+@app.cell
+def _(biomass_rxn):
+    biomass_rxn.products
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""Let's check if `Metabolite`s' `formula_weight`s are molecular masses. For example, ADP's molar mass should be 427.201 g/mol.""")
+    return
+
+
+@app.cell
+def _(model):
+    model.metabolites.get_by_id("cpd00008_c").formula_weight
+    return
+
+
+@app.cell
+def _(model):
+    biomass_metabolite = model.metabolites.get_by_id("cpd11416_c")
+    biomass_metabolite.formula_weight
     return
 
 
