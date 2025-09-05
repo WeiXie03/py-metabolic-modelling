@@ -5,11 +5,26 @@ app = marimo.App(width="medium")
 
 with app.setup:
     # Initialization code that runs before all other cells
-    pass
+    import marimo as mo
+    from typing import List, Tuple, Optional
+    from typing import List, Tuple, Optional, Dict, Any
+    from dataclasses import dataclass
+    from pathlib import Path
+
+    import numpy as np
+    from matplotlib import pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
+
+    import cobra
+    from cobra.io import read_sbml_model, save_json_model
+    from cobra import Model, Reaction, Metabolite
+
+    import torch
+    from ax import Client, RangeParameterConfig
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(
         r"""
     # Optimizing Media of _Synechococcus elongatus_ UTEX 2973 for Max Growth
@@ -24,7 +39,7 @@ def _(mo):
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(
         r"""
     ## Load model
@@ -45,19 +60,13 @@ def _(mo):
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(r"""_Note_: The below cell might take a bit long to run if the SBML model is big.""")
     return
 
 
 @app.cell
 def _():
-    from pathlib import Path
-    import marimo as mo
-    import cobra
-    from cobra.io import read_sbml_model, save_json_model
-    from cobra import Model, Reaction, Metabolite
-
     RAW_DATA_DIR = Path(__file__).parent.parent / "data" / "raw"
     PROCD_DATA_DIR = Path(__file__).parent.parent / "data" / "processed"
     # RAW_DATA_DIR = ROOT_DIR / "data" / "raw"
@@ -65,12 +74,12 @@ def _():
 
     model = read_sbml_model(RAW_DATA_DIR / "SBMLmodel_UTEX2973.xml")
 
-    model.solver = "gurobi"
-    return cobra, mo, model
+    # model.solver = "gurobi"
+    return PROCD_DATA_DIR, model
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(
         r"""
     ## Finding the Media Components in the Model
@@ -114,7 +123,7 @@ def _(BG_11_MEDIA_EXRXNS_IDS, model):
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(
         r"""
     ### Oxygen
@@ -131,7 +140,7 @@ def _(model):
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(
         r"""
     ## Phenotypic Phase Planes
@@ -142,13 +151,7 @@ def _(mo):
 
 
 @app.cell
-def _(cobra, plt):
-    import numpy as np
-    from typing import List, Tuple, Optional
-    from mpl_toolkits.mplot3d import Axes3D
-    from typing import List, Tuple, Optional, Dict, Any
-    from dataclasses import dataclass
-
+def _():
     @dataclass
     class PhasePlaneResult:
         """Container for phase plane analysis results."""
@@ -396,6 +399,145 @@ def _(cobra, plt):
 
         return final_result
 
+    def adaptive_phase_plane_search(model: cobra.Model,
+                                   rxnsIDs_x: List[str],
+                                   rxnsIDs_y: List[str],
+                                   initial_x_range: Tuple[float, float],
+                                   initial_y_range: Tuple[float, float],
+                                   max_x_range: Tuple[float, float],
+                                   max_y_range: Tuple[float, float],
+                                   initial_steps: Tuple[int, int] = (100, 100),
+                                   expansion_factor: float = 1.5,
+                                   max_expansions: int = 5,
+                                   boundary_tolerance: float = 0.05,
+                                   obj_rxn_id: Optional[str] = None,
+                                   verbose: bool = True) -> PhasePlaneResult:
+        """
+        Adaptive expanding grid search to find optimal conditions.
+
+        Args:
+            model: COBRApy model
+            rxnsIDs_x, rxnsIDs_y: Reaction IDs for x and y axes
+            initial_x_range, initial_y_range: Starting search ranges
+            max_x_range, max_y_range: Maximum allowed search ranges
+            initial_steps: Grid resolution (x_steps, y_steps)
+            expansion_factor: Factor by which to expand ranges
+            max_expansions: Maximum number of expansion iterations
+            boundary_tolerance: Fraction of range from boundary to consider "at boundary"
+            obj_rxn_id: Optional objective reaction ID
+            verbose: Whether to print progress
+
+        Returns:
+            PhasePlaneResult with search history
+        """
+
+        current_x_range = initial_x_range
+        current_y_range = initial_y_range
+        search_history = []
+
+        for expansion in range(max_expansions + 1):
+            if verbose:
+                print(f"Expansion {expansion}: x_range={current_x_range}, y_range={current_y_range}")
+
+            # Compute phase plane for current ranges
+            result = compute_phase_plane_grid(
+                model, rxnsIDs_x, rxnsIDs_y,
+                current_x_range, current_y_range,
+                initial_steps[0], initial_steps[1],
+                obj_rxn_id
+            )
+
+            # Store search step
+            search_history.append({
+                'expansion': expansion,
+                'x_range': current_x_range,
+                'y_range': current_y_range,
+                'best_coordinates': result.best_coordinates,
+                'best_objective': result.best_objective_value,
+                'evaluations': result.total_evaluations
+            })
+
+            # Check if we found a feasible solution
+            if np.isnan(result.best_objective_value):
+                if verbose:
+                    print(f"  No feasible solutions found in current range")
+                break
+
+            if verbose:
+                print(f"  Best objective: {result.best_objective_value:.6f} at {result.best_coordinates}")
+
+            # Check if optimum is at boundaries
+            x_opt, y_opt = result.best_coordinates
+            x_min, x_max = current_x_range
+            y_min, y_max = current_y_range
+
+            # Calculate boundary thresholds
+            x_tol = boundary_tolerance * (x_max - x_min)
+            y_tol = boundary_tolerance * (y_max - y_min)
+
+            # Check which boundaries the optimum is near
+            at_x_min = (x_opt - x_min) <= x_tol
+            at_x_max = (x_max - x_opt) <= x_tol
+            at_y_min = (y_opt - y_min) <= y_tol
+            at_y_max = (y_max - y_opt) <= y_tol
+
+            # If not at any boundary, we've found a local optimum
+            if not (at_x_min or at_x_max or at_y_min or at_y_max):
+                if verbose:
+                    print(f"  Optimum well within boundaries - search converged!")
+                break
+
+            # Prepare for next expansion
+            if expansion < max_expansions:
+                new_x_range = list(current_x_range)
+                new_y_range = list(current_y_range)
+
+                # Expand ranges where optimum is at boundary
+                if at_x_min:
+                    expansion_size = (current_x_range[1] - current_x_range[0]) * (expansion_factor - 1) / 2
+                    new_x_range[0] = max(max_x_range[0], current_x_range[0] - expansion_size)
+                    if verbose:
+                        print(f"  Expanding x-axis lower bound")
+
+                if at_x_max:
+                    expansion_size = (current_x_range[1] - current_x_range[0]) * (expansion_factor - 1) / 2
+                    new_x_range[1] = min(max_x_range[1], current_x_range[1] + expansion_size)
+                    if verbose:
+                        print(f"  Expanding x-axis upper bound")
+
+                if at_y_min:
+                    expansion_size = (current_y_range[1] - current_y_range[0]) * (expansion_factor - 1) / 2
+                    new_y_range[0] = max(max_y_range[0], current_y_range[0] - expansion_size)
+                    if verbose:
+                        print(f"  Expanding y-axis lower bound")
+
+                if at_y_max:
+                    expansion_size = (current_y_range[1] - current_y_range[0]) * (expansion_factor - 1) / 2
+                    new_y_range[1] = min(max_y_range[1], current_y_range[1] + expansion_size)
+                    if verbose:
+                        print(f"  Expanding y-axis upper bound")
+
+                # Check if we've hit maximum ranges
+                if (new_x_range[0] <= max_x_range[0] and new_x_range[1] >= max_x_range[1] and
+                    new_y_range[0] <= max_y_range[0] and new_y_range[1] >= max_y_range[1]):
+                    if verbose:
+                        print(f"  Reached maximum search ranges")
+                    break
+
+                current_x_range = tuple(new_x_range)
+                current_y_range = tuple(new_y_range)
+
+        # Add search history to final result
+        result.search_history = search_history
+
+        if verbose:
+            total_evals = sum(step['evaluations'] for step in search_history)
+            print(f"\nSearch completed in {len(search_history)} expansions with {total_evals} total evaluations")
+            print(f"Final best objective: {result.best_objective_value:.6f}")
+            print(f"Final best coordinates: x={result.best_coordinates[0]:.6f}, y={result.best_coordinates[1]:.6f}")
+
+        return result
+
     def plot_phase_plane_result(result: PhasePlaneResult,
                                title: str,
                                xlabel: str,
@@ -429,7 +571,7 @@ def _(cobra, plt):
 
             ax.set_xlabel(xlabel)
             ax.set_ylabel(ylabel)
-            ax.set_title(f'{title} (2D)')
+            ax.set_title(f'{title}')
             if not np.isnan(result.best_objective_value):
                 ax.legend()
             ax.grid(True, alpha=0.3)
@@ -437,11 +579,14 @@ def _(cobra, plt):
 
             if plot_type == '2d':
                 plt.show()
+                # uptake rates are negative of fluxes => put origin closest to observer
+                ax.invert_xaxis()
+                ax.invert_yaxis()
 
         if plot_type in ['3d', 'both']:
             # 3D Surface Plot
             fig = plt.figure(figsize=(12, 9))
-            ax = fig.add_subplot(111, projection='3d')
+            ax = fig.add_subplot(111, projection="3d")
 
             surf = ax.plot_surface(result.X, result.Y, result.objective_matrix, 
                                  cmap='viridis', alpha=0.8,
@@ -461,7 +606,7 @@ def _(cobra, plt):
             ax.set_xlabel(xlabel)
             ax.set_ylabel(ylabel)
             ax.set_zlabel('Objective Value')
-            ax.set_title(f'{title} (3D)')
+            ax.set_title(f'{title}')
             ax.view_init(elev=30, azim=45)
 
             if not np.isnan(result.best_objective_value):
@@ -471,13 +616,12 @@ def _(cobra, plt):
 
             if plot_type == '3d':
                 plt.show()
+                # uptake rates are negative of fluxes => put origin closest to observer
+                ax.invert_xaxis()
+                ax.invert_yaxis()
 
         if plot_type == 'both':
             plt.show()
-
-        # uptake rates are negative of fluxes => put origin closest to observer
-        ax.invert_xaxis()
-        ax.invert_yaxis()
 
     def plot_search_hierarchy(result: PhasePlaneResult, title: str = "Hierarchical Phase Plane Search"):
         """
@@ -592,14 +736,14 @@ def _(cobra, plt):
 
         return stats
     return (
+        adaptive_phase_plane_search,
         compute_phase_plane_grid,
-        hierarchical_phase_plane_search,
         plot_phase_plane_result,
     )
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(r"""### CO2 vs Light Uptake""")
     return
 
@@ -615,148 +759,175 @@ def _(compute_phase_plane_grid, model, plot_phase_plane_result):
                                               264)
     plot_phase_plane_result(PhPP_CO2_light,
                             title="$CO_2$ vs Light Uptake Phenotypic Phase Plane",
-                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
+                            xlabel="$CO_2$ Exchange Flux (mmol/gDW/h)",
                             ylabel="Light Uptake: Photosystem I Uptake = Photosystem II Uptake ($\\mu E/m^2/s$)")
     return
 
 
 @app.cell
-def _(hierarchical_phase_plane_search, model, plot_phase_plane_result):
-    hierarchical_PhPP_CO2_light = hierarchical_phase_plane_search(model,
-                                    ["EX_CO2"],
-                                    ["EX_PHO1", "EX_PHO2"],
-                                    (-10000, 10),
-                                    (-10000, 10)
-    )
-    plot_phase_plane_result(hierarchical_PhPP_CO2_light,
+def _(adaptive_phase_plane_search, model, plot_phase_plane_result):
+    ### CO2 vs Ammonia
+    adaptive_PhPP_CO2_light = adaptive_phase_plane_search(model,
+                                               ["EX_CO2"],
+                                               ["EX_PHO1", "EX_PHO2"],
+                                               (-1200, 10),
+                                               (-1200, 10),
+                                               (-6000, 30),
+                                               (-6000, 30))
+    plot_phase_plane_result(adaptive_PhPP_CO2_light,
                             title="$CO_2$ vs Light Uptake Phenotypic Phase Plane",
-                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
+                            xlabel="$CO_2$ Exchange Flux (mmol/gDW/h)",
                             ylabel="Light Uptake: Photosystem I Uptake = Photosystem II Uptake ($\\mu E/m^2/s$)")
+    return (adaptive_PhPP_CO2_light,)
+
+
+@app.cell
+def _():
+    mo.md(r"""Let's "lock in" these optimal CO2 and light uptakes.""")
     return
 
 
 @app.cell
-def _(mo):
+def _(adaptive_PhPP_CO2_light, model):
+    model.EX_CO2.lower_bound, = adaptive_PhPP_CO2_light.best_coordinates[0]
+    model.EX_PHO1.lower_bound = model.EX_PHO2.lower_bound = adaptive_PhPP_CO2_light.best_coordinates[1]
+    return
+
+
+@app.cell
+def _():
     mo.md(r"""### CO2 vs Ammonia""")
     return
 
 
 @app.cell
-def _(hierarchical_phase_plane_search, model, plot_phase_plane_result):
-    PhPP_CO2_NH3 = hierarchical_phase_plane_search(model,
-                                                   ["EX_CO2"],
-                                                   ["EX_NH3"],
-                                                   (-10000, 10),
-                                                   (-10000, 10))
+def _(adaptive_phase_plane_search, model, plot_phase_plane_result):
+    PhPP_CO2_NH3 = adaptive_phase_plane_search(model,
+                                               ["EX_CO2"],
+                                               ["EX_NH3"],
+                                               (-1200, 10),
+                                               (-1200, 10),
+                                               (-6000, 30),
+                                               (-6000, 30))
     plot_phase_plane_result(PhPP_CO2_NH3,
                             title="$CO_2$ vs Ammonia Uptake Phenotypic Phase Plane",
-                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
-                            ylabel="$NH_3$ Uptake (mmol/gDW/h)")
+                            xlabel="$CO_2$ Exchange Flux (mmol/gDW/h)",
+                            ylabel="$NH_3$ Exchange Flux (mmol/gDW/h)")
     return
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(r"""### CO2 vs Nitrate""")
     return
 
 
 @app.cell
-def _(hierarchical_phase_plane_search, model, plot_phase_plane_result):
-    PhPP_CO2_Nitrate = hierarchical_phase_plane_search(model,
-                                                       ["EX_CO2"],
-                                                       ["EX_Nitrate"],
-                                                       (-10000, 10),
-                                                       (-10000, 10))
+def _(adaptive_phase_plane_search, model, plot_phase_plane_result):
+    PhPP_CO2_Nitrate = adaptive_phase_plane_search(model,
+                                               ["EX_CO2"],
+                                               ["EX_Nitrate"],
+                                               (-1200, 10),
+                                               (-1200, 10),
+                                               (-6000, 30),
+                                               (-6000, 30))
     plot_phase_plane_result(PhPP_CO2_Nitrate,
                             title="$CO_2$ vs Nitrate Uptake Phenotypic Phase Plane",
-                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
-                            ylabel="Nitrate Uptake (mmol/gDW/h)")
+                            xlabel="$CO_2$ Exchange Flux (mmol/gDW/h)",
+                            ylabel="Nitrate Exchange Flux (mmol/gDW/h)")
     return
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(r"""### CO2 vs Phosphate""")
     return
 
 
 @app.cell
-def _(hierarchical_phase_plane_search, model, plot_phase_plane_result):
-    PhPP_CO2_Phosphate = hierarchical_phase_plane_search(model,
-                                                         ["EX_CO2"],
-                                                         ["EX_Phosphate"],
-                                                         (-10000, 10),
-                                                         (-10000, 10))
+def _(adaptive_phase_plane_search, model, plot_phase_plane_result):
+    PhPP_CO2_Phosphate = adaptive_phase_plane_search(model,
+                                               ["EX_CO2"],
+                                               ["EX_Phosphate"],
+                                               (-1200, 10),
+                                               (-1200, 10),
+                                               (-6000, 30),
+                                               (-6000, 30))
     plot_phase_plane_result(PhPP_CO2_Phosphate,
                             title="$CO_2$ vs Phosphate Uptake Phenotypic Phase Plane",
-                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
-                            ylabel="Phosphate Uptake (mmol/gDW/h)")
+                            xlabel="$CO_2$ Exchange Flux (mmol/gDW/h)",
+                            ylabel="Phosphate Exchange Flux (mmol/gDW/h)")
     return
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(r"""### CO2 vs Citrate""")
     return
 
 
 @app.cell
-def _(hierarchical_phase_plane_search, model, plot_phase_plane_result):
-    PhPP_CO2_Citrate = hierarchical_phase_plane_search(model,
-                                                       ["EX_CO2"],
-                                                       ["EX_Citrate"],
-                                                       (-10000, 10),
-                                                       (-10000, 10))
+def _(adaptive_phase_plane_search, model, plot_phase_plane_result):
+    PhPP_CO2_Citrate = adaptive_phase_plane_search(model,
+                                               ["EX_CO2"],
+                                               ["EX_Citrate"],
+                                               (-1200, 10),
+                                               (-1200, 10),
+                                               (-6000, 30),
+                                               (-6000, 30))
     plot_phase_plane_result(PhPP_CO2_Citrate,
                             title="$CO_2$ vs Citrate Uptake Phenotypic Phase Plane",
-                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
-                            ylabel="Citrate Uptake (mmol/gDW/h)")
+                            xlabel="$CO_2$ Exchange Flux (mmol/gDW/h)",
+                            ylabel="Citrate Exchange Flux (mmol/gDW/h)")
     return
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(r"""### CO2 vs Sulfate""")
     return
 
 
 @app.cell
-def _(hierarchical_phase_plane_search, model, plot_phase_plane_result):
-    PhPP_CO2_Sulfate = hierarchical_phase_plane_search(model,
-                                                       ["EX_CO2"],
-                                                       ["EX_Sulfate"],
-                                                       (-10000, 10),
-                                                       (-10000, 10))
+def _(adaptive_phase_plane_search, model, plot_phase_plane_result):
+    PhPP_CO2_Sulfate = adaptive_phase_plane_search(model,
+                                               ["EX_CO2"],
+                                               ["EX_Sulfate"],
+                                               (-1200, 10),
+                                               (-1200, 10),
+                                               (-6000, 30),
+                                               (-6000, 30))
     plot_phase_plane_result(PhPP_CO2_Sulfate,
                             title="$CO_2$ vs Sulfate Uptake Phenotypic Phase Plane",
-                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
-                            ylabel="Sulfate Uptake (mmol/gDW/h)")
+                            xlabel="$CO_2$ Exchange Flux (mmol/gDW/h)",
+                            ylabel="Sulfate Exchange Flux (mmol/gDW/h)")
     return
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(r"""### CO2 vs Calcium""")
     return
 
 
 @app.cell
-def _(hierarchical_phase_plane_search, model, plot_phase_plane_result):
-    PhPP_CO2_Ca = hierarchical_phase_plane_search(model,
-                                                  ["EX_CO2"],
-                                                  ["EX_Calcium"],
-                                                  (-10000, 10),
-                                                  (-10000, 10))
-    plot_phase_plane_result(PhPP_CO2_Ca,
+def _(adaptive_phase_plane_search, model, plot_phase_plane_result):
+    PhPP_CO2_Calcium = adaptive_phase_plane_search(model,
+                                               ["EX_CO2"],
+                                               ["EX_Calcium"],
+                                               (-1200, 10),
+                                               (-1200, 10),
+                                               (-6000, 30),
+                                               (-6000, 30))
+    plot_phase_plane_result(PhPP_CO2_Calcium,
                             title="$CO_2$ vs Calcium Uptake Phenotypic Phase Plane",
-                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
-                            ylabel="Calcium Uptake (mmol/gDW/h)")
+                            xlabel="$CO_2$ Exchange Flux (mmol/gDW/h)",
+                            ylabel="Calcium Exchange Flux (mmol/gDW/h)")
     return
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(
         r"""
     ### CO2 vs Nitrate, Sulfate, Phosphate and Calcium
@@ -767,36 +938,77 @@ def _(mo):
 
 
 @app.cell
-def _(hierarchical_phase_plane_search, model, plot_phase_plane_result):
-    PhPP_CO2_multinutrients = hierarchical_phase_plane_search(model,
+def _(adaptive_phase_plane_search, model, plot_phase_plane_result):
+    PhPP_CO2_multinutrients = adaptive_phase_plane_search(model,
                                                               ["EX_CO2"],
                                                               ["EX_Nitrate", "EX_Sulfate", "EX_Phosphate", "EX_Calcium"],
-                                                              (-10000, 10),
-                                                              (-10000, 10))
+                                               (-1200, 10),
+                                               (-1200, 10),
+                                               (-6000, 30),
+                                               (-6000, 30))
     plot_phase_plane_result(PhPP_CO2_multinutrients,
                             title="$CO_2$ vs Nitrate, Sulfate, Phosphate and Calcium Uptake Phenotypic Phase Plane",
-                            xlabel="$CO_2$ Uptake (mmol/gDW/h)",
-                            ylabel="Nitrate = Sulfate = Phosphate = Calcium Uptake (mmol/gDW/h)")
+                            xlabel="$CO_2$ Exchange Flux (mmol/gDW/h)",
+                            ylabel="Nitrate = Sulfate = Phosphate = Calcium Exchange Flux (mmol/gDW/h)")
     return
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(r"""## Flux Variability Analysis on BG-11 Components Uptakes""")
     return
 
 
 @app.cell
-def _(mo):
+def _():
+    mo.md(r"""Extend the default flux constraints in the model so we actually explore enough of the space of possibilities.""")
+    return
+
+
+app._unparsable_cell(
+    r"""
+    import pandas as pd
+    from cobra.flux_analysis import flux_variability_analysis
+
+    def run_fva_with_lbs(model: cobra.core.Model, lower_bounds: dict[str, float]):
+        \"\"\"Run flux variability analysis on the biomass reaction with specified lower bounds on specified exchange reactions as a dict of reaction IDs to lower bounds.\"\"\"
+        with model:
+            for _rxn_id, _lb in lower_bounds.items():
+                if _rxn_id in model.reactions:
+                    _rxn = model.reactions.get_by_id(_rxn_id)
+                    _rxn.lower_bound = _lb
+            return flux_variability_analysis(model, [biomass_rxn], fraction_of_optimum=1, loopless=True)])
+
+    def plot_fva_ranges(fva_results: pd.DataFrame, title: str):
+        \"\"\"Plot horizontal bar plot of FVA results.\"\"\"
+
+        plt.figure(figsize=(6, 10))
+        ax = plt.gca()
+        bar_plot = plt.barh(fva_results.index, fva_results['maximum'] - fva_results['minimum'], left=fva_results['minimum'], color='violet')
+        for (i, (min_val, max_val)) in enumerate(zip(fva_results['minimum'], fva_results['maximum'])):
+            ax.plot(min_val, i, marker='|', color='black', markersize=18, markeredgewidth=2)
+            ax.plot(max_val, i, marker='|', color='black', markersize=18, markeredgewidth=2)
+        ax.set_title(title)
+        ax.set_xlabel('Flux Range (mmol/gDW/h)')
+        ax.set_ylabel('Reactions')
+        plt.tight_layout()
+        plt.show()
+    """,
+    name="_"
+)
+
+
+@app.cell
+def _():
     mo.md(
         r"""
-    Extend the default flux constraints in the model so we actually explore enough of the space of possibilities.
+    From the above phenotypic phase plane analyses, we know optimal...
 
-    From the above (_TODO_) phenotypic phase plane analyses, we know optimal...
     - CO2 = -132 mmol/gDW/h, photosystem I = photosystem II = -900 mmol/gDW/h
     - CO2 = -30 mmol/gDW/h, NH3 = -30 mmol/gDW/h
 
     Let's go to...
+
     - -2000 $\leq$ CO2
     - -2500 $\leq$ photosystems
     - -1000 $\leq$ others
@@ -806,48 +1018,33 @@ def _(mo):
 
 
 @app.cell
-def _(BG_11_MEDIA_EXRXNS_IDS, model):
-    model_extended_constraints = model.copy()
-    for _rxn_id in BG_11_MEDIA_EXRXNS_IDS:
-        _rxn = model_extended_constraints.reactions.get_by_id(_rxn_id)
-        if _rxn.lower_bound > -1500:
-            _rxn.lower_bound = -1500
-    model_extended_constraints.reactions.EX_CO2.lower_bound = -2000
-    model_extended_constraints.reactions.EX_PHO1.lower_bound = -2500
-    model_extended_constraints.reactions.EX_PHO2.lower_bound = -2500
-    for _rxn_id in BG_11_MEDIA_EXRXNS_IDS:
-        _rxn = model_extended_constraints.reactions.get_by_id(_rxn_id)
-        print(f'{_rxn.id}: {_rxn.lower_bound} <= flux <= {_rxn.upper_bound}')
-    return (model_extended_constraints,)
+def _(BG_11_MEDIA_EXRXNS_IDS, PROCD_DATA_DIR, model, pd):
+    PhPP_lbs = {_rxn_id : min(-1500, model.reactions.get_by_id(_rxn_id).lower_bound) for _rxn_id in BG_11_MEDIA_EXRXNS_IDS}
+    PhPP_lbs["EX_CO2"] = -2000
+    PhPP_lbs["EX_PHO1"] = -2500
+    PhPP_lbs["EX_PHO2"] = -2500
+
+    PhPP_lbs_series = pd.Series(PhPP_lbs)
+    print(PhPP_lbs_series)
+    PhPP_lbs_series.to_csv(PROCD_DATA_DIR / "BG11_PhPP_lower_bounds0.csv")
+    return (PhPP_lbs,)
 
 
 @app.cell
-def _(BG_11_MEDIA_EXRXNS_IDS, model_extended_constraints):
-    from cobra.flux_analysis import flux_variability_analysis
-    fva_results = flux_variability_analysis(model_extended_constraints, [model_extended_constraints.reactions.get_by_id(_rxn_id) for _rxn_id in BG_11_MEDIA_EXRXNS_IDS], fraction_of_optimum=1, loopless=True)
-    fva_results
-    return flux_variability_analysis, fva_results
+def _(PhPP_lbs, model, run_fva_with_lbs):
+    fva_results_PhPP = run_fva_with_lbs(model, PhPP_lbs)
+    fva_results_PhPP
+    return (fva_results_PhPP,)
 
 
 @app.cell
-def _(fva_results):
-    from matplotlib import pyplot as plt
-    plt.figure(figsize=(6, 10))
-    _ax = plt.gca()
-    _bar_plot = plt.barh(fva_results.index, fva_results['maximum'] - fva_results['minimum'], left=fva_results['minimum'], color='violet')
-    for (_i, (_min_val, _max_val)) in enumerate(zip(fva_results['minimum'], fva_results['maximum'])):
-        _ax.plot(_min_val, _i, marker='|', color='black', markersize=18, markeredgewidth=2)
-        _ax.plot(_max_val, _i, marker='|', color='black', markersize=18, markeredgewidth=2)
-    _ax.set_title('Flux Variability Analysis of BG-11 Media Uptake Reactions')
-    _ax.set_xlabel('Flux Range (mmol/gDW/h)')
-    _ax.set_ylabel('Reactions')
-    plt.tight_layout()
-    plt.show()
-    return (plt,)
+def _(fva_results_PhPP, plot_fva_ranges):
+    plot_fva_ranges(fva_results_PhPP, title="FVA of BG-11 Media Uptake Reactions with Phase Plane Analysis Optimal Lower Bounds")
+    return
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(
         r"""
     ### _Note_: Beware Loops
@@ -867,14 +1064,14 @@ def _(BG_11_MEDIA_EXRXNS_IDS, flux_variability_analysis, model):
 
 
 @app.cell
-def _(fva_results, loopless_fva_results):
+def _(PhPP_fva_results, loopless_fva_results):
     # check the difference between loopless and non-loopless FVA
-    fva_results - loopless_fva_results
+    PhPP_fva_results - loopless_fva_results
     return
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(
         r"""
     ### No Longer Using CO2 as Main Carbon Source?
@@ -884,54 +1081,38 @@ def _(mo):
     return
 
 
-@app.cell
-def _(BG_11_MEDIA_EXRXNS_IDS, model):
-    model_extended_constraints_1 = model.copy()
+app._unparsable_cell(
+    r"""
     EXTEND_EXRXNS_IDS = {'EX_CO2', 'EX_PHO1', 'EX_PHO2', 'EX_NH3', 'EX_Mn2_', 'EX_Zinc', 'EX_Cu2_', 'EX_Molybdate', 'EX_Co2_', 'EX_Nitrate', 'EX_Phosphate', 'EX_Sulfate', 'EX_Fe3_', 'EX_Calcium'}
-    for _rxn_id in EXTEND_EXRXNS_IDS:
-        _rxn = model_extended_constraints_1.reactions.get_by_id(_rxn_id)
-        if _rxn.lower_bound > -1500:
-            _rxn.lower_bound = -1500
-    model_extended_constraints_1.reactions.EX_CO2.lower_bound = -2000
-    model_extended_constraints_1.reactions.EX_PHO1.lower_bound = -2500
-    model_extended_constraints_1.reactions.EX_PHO2.lower_bound = -2500
-    model_extended_constraints_1.reactions.EX_Citrate.lower_bound = -1
-    model_extended_constraints_1.reactions.EX_H2CO3.lower_bound = -10
-    for _rxn_id in BG_11_MEDIA_EXRXNS_IDS:
-        _rxn = model_extended_constraints_1.reactions.get_by_id(_rxn_id)
-        print(f'{_rxn.id}: {_rxn.lower_bound} <= flux <= {_rxn.upper_bound}')
-    return (model_extended_constraints_1,)
+    PhPP_extended_lbs = {_rxn_id : min(-1500, model.reactions.get_by_id(_rxn_id).lower_bound) for _rxn_id in EXTEND_EXRXNS_IDS}
+    PhPP_extended_lbs[EX_CO2\"].lower_bound = -2000
+    PhPP_extended_lbs[EX_PHO1\"].lower_bound = -2500
+    PhPP_extended_lbs[EX_PHO2\"].lower_bound = -2500
+    PhPP_extended_lbs[EX_Citrate\"].lower_bound = -1
+    PhPP_extended_lbs[EX_H2CO3\"].lower_bound = -10
+
+    pd.Series(PhPP_extended_lbs).to_csv(PROCD_DATA_DIR / \"BG11_exchange_lower_bounds1.csv\")
+
+    fva_results_PhPP_bounds_extended = run_fva_with_lbs(model, PhPP_extended_lbs)
+    """,
+    name="_"
+)
 
 
 @app.cell
-def _(
-    BG_11_MEDIA_EXRXNS_IDS,
-    flux_variability_analysis,
-    model_extended_constraints_1,
-):
-    fva_results_1 = flux_variability_analysis(model_extended_constraints_1, [model_extended_constraints_1.reactions.get_by_id(_rxn_id) for _rxn_id in BG_11_MEDIA_EXRXNS_IDS], fraction_of_optimum=1, loopless=True)
-    fva_results_1
-    return (fva_results_1,)
-
-
-@app.cell
-def _(fva_results_1, plt):
-    plt.figure(figsize=(6, 10))
-    _ax = plt.gca()
-    _bar_plot = plt.barh(fva_results_1.index, fva_results_1['minimum'] - fva_results_1['maximum'], left=-fva_results_1['minimum'], color='violet')
-    for (_i, (_min_val, _max_val)) in enumerate(zip(-fva_results_1['maximum'], -fva_results_1['minimum'])):
-        _ax.plot(_min_val, _i, marker='|', color='black', markersize=18, markeredgewidth=2)
-        _ax.plot(_max_val, _i, marker='|', color='black', markersize=18, markeredgewidth=2)
-    _ax.set_title('Flux Variability Analysis of BG-11 Media Uptake Reactions')
-    _ax.set_xlabel('Uptake Range (mmol/gDW/h)')
-    _ax.set_ylabel('Reactions')
-    plt.tight_layout()
-    plt.show()
+def _(fva_results_PhPP_bounds_extended):
+    fva_results_PhPP_bounds_extended
     return
 
 
 @app.cell
-def _(mo):
+def _(fva_results_PhPP, plot_fva_ranges):
+    plot_fva_ranges(fva_results_PhPP, title="FVA of BG-11 Media Uptake Reactions with Lower Bounds Beyond Phase Plane Analysis Optimal Values")
+    return
+
+
+@app.cell
+def _():
     mo.md(
         r"""
     ## Some Proper Optimization
@@ -992,7 +1173,6 @@ def _(model):
 
 @app.cell
 def _():
-    import torch
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # device = "cpu"
     return (device,)
@@ -1000,8 +1180,6 @@ def _():
 
 @app.cell
 def _(device):
-    from ax import Client, RangeParameterConfig
-
     params = [
         RangeParameterConfig(name="lb_EX_CO2", parameter_type="float", bounds=(-3600, -1000)),
         RangeParameterConfig(name="lb_EX_PHO1", parameter_type="float", bounds=(-3000, -1000)),
@@ -1029,7 +1207,7 @@ def _(device):
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(r"""Now the optimization is finally set up, and the optimization loop can actually begin.""")
     return
 
@@ -1066,7 +1244,7 @@ def _(client):
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(
         r"""
     # Translating to Real Concentrations
@@ -1075,14 +1253,13 @@ def _(mo):
     So, how much of each component do we add to our media? We need to translate *uptake rates* to *concentrations*. *Fluxes* are **not** equivalent to *concentrations*--the former are in $\mathrm{mmol} \cdot \mathrm{gDW^{-1}} \cdot \mathrm{hr^{-1}}$, while the latter in $\mathrm{g} \cdot \mathrm{L^{-1}}$. It's not just a simple unit conversion. Instead, we've a bit more planning to do and assumptions to make.
 
     - For now, let's say we'll only "feed" our cyano culture once, at the start of the experiment. So we need to make sure that the initial concentration is enough to sustain the uptake for the entire duration of the experiment.
-
     """
     )
     return
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(
         r"""
     Now for translating fluxes to concentrations, we need to compute compute projected growth to multiply away the $\mathrm{gDW}$ in the denominator. We can get this from
@@ -1128,7 +1305,7 @@ def _(biomass_rxn):
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(r"""Uhhhhhmmm... well that's not good.""")
     return
 
@@ -1140,7 +1317,7 @@ def _(biomass_rxn):
 
 
 @app.cell
-def _(mo):
+def _():
     mo.md(r"""Let's check if `Metabolite`s' `formula_weight`s are molecular masses. For example, ADP's molar mass should be 427.201 g/mol.""")
     return
 
@@ -1155,11 +1332,6 @@ def _(model):
 def _(model):
     biomass_metabolite = model.metabolites.get_by_id("cpd11416_c")
     biomass_metabolite.formula_weight
-    return
-
-
-@app.cell
-def _():
     return
 
 
